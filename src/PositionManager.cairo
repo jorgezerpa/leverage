@@ -20,7 +20,9 @@ pub trait IPositionManager<TContractState> {
     fn deposit_margin(ref self: TContractState, amount: u256);
     fn open_position(ref self: TContractState, token: ContractAddress, margin_amount_to_use: u256, leverage: u8, direction: Direction ); 
     fn close_position(ref self: TContractState, positionIndex: u64, token: ContractAddress); // in Positions vector  
+    fn liquidate_position(ref self: TContractState, positionIndex: u64, token: ContractAddress); // in Positions vector  
     
+
     // // for liquidators or keepers
     // fn liquidate_position(ref self: TContractState, positionId: u256);
 
@@ -49,7 +51,7 @@ mod PositionManager {
     use starknet::{ContractAddress, get_caller_address};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
     use starknet::storage::{Map, StoragePathEntry};
-    use starknet::storage::{Vec, MutableVecTrait, VecTrait};
+    use starknet::storage::{Vec, MutableVecTrait};
 
     // dispatchers
     use openzeppelin_token::erc20::{ERC20ABIDispatcher, ERC20ABIDispatcherTrait};
@@ -242,12 +244,43 @@ mod PositionManager {
             let position = self.positions.entry(hash).at(positionIndex); 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
+            
+            // Check:
+            // health of position to check if can close it or needs to deposit collateral first 
+            // in case of loss -> how much should protocol keep from margin to cover losses (in case of loss)
+            // in case of profit -> how much should the procol take on fees 
+            // how much should send to the user 
+
+            // make correspondant transfers  -> follow CEI this after below removes 
 
             // remove
             self._remove_position_from_view(super::View::positions, positionIndex, token); 
             self._remove_position_from_view(super::View::positionsByUser, positionIndex, token); 
             self._remove_position_from_view(super::View::positionsByUserByTradingPair, positionIndex, token); 
+
+            // emit event
+        }
+
+        fn liquidate_position(ref self: ContractState, positionIndex: u64, token: ContractAddress) {
+            // assertions 
+            let caller = get_caller_address();
+            let hash:felt252 = self.get_trading_pair_hash(token); 
+            let position = self.positions.entry(hash).at(positionIndex); 
+            assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
+            assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
+
+            // check:
+            // health state -> can be liquidated?
+            // calculate -> how much back to the pool, how much as protocol fees
             
+            // make correspondant transfers -> follow CEI, do it bellow removes 
+
+            // remove
+            self._remove_position_from_view(super::View::positions, positionIndex, token); 
+            self._remove_position_from_view(super::View::positionsByUser, positionIndex, token); 
+            self._remove_position_from_view(super::View::positionsByUserByTradingPair, positionIndex, token); 
+
+            // emit event
         }
     
     }    
@@ -263,39 +296,31 @@ mod PositionManager {
             // get position to be closed 
             let mut position_to_close = self.positions.entry(hash).at(positionIndex);
 
-            // get views 
-            let viewToUse = match view {
-                super::View::positions => self.positionsOpen.entry(hash),
-                super::View::positionsByUser => self.positionsOpenByUser.entry(caller),
-                super::View::positionsByUserByTradingPair => self.positionsOpenByUserByTradingPair.entry(caller).entry(hash)
+            // search for the position on the specified view and get data needed to remove such position
+            let (remove_index, viewToUse, viewToUseClosed) = match view {
+                super::View::positions => (position_to_close.virtualIndexOnPositionsOpen.read(),self.positionsOpen.entry(hash),self.positionsClosed.entry(hash)), 
+                super::View::positionsByUser => (position_to_close.virtualIndexOnPositionsOpenByUser.read(),self.positionsOpenByUser.entry(caller),self.positionsClosedByUser.entry(caller)),
+                super::View::positionsByUserByTradingPair => (position_to_close.virtualIndexOnPositionsOpenByUserByTradingPair.read(),self.positionsOpenByUserByTradingPair.entry(caller).entry(hash),self.positionsClosedByUserByTradingPair.entry(caller).entry(hash))
             };
-
-            let viewToUseClosed = match view {
-                super::View::positions => self.positionsClosed.entry(hash),
-                super::View::positionsByUser => self.positionsClosedByUser.entry(caller),
-                super::View::positionsByUserByTradingPair => self.positionsClosedByUserByTradingPair.entry(caller).entry(hash)
-            };
-
-            let remove_index:u64 = match view {
-                super::View::positions => position_to_close.virtualIndexOnPositionsOpen.read(), 
-                super::View::positionsByUser => position_to_close.virtualIndexOnPositionsOpenByUser.read(),
-                super::View::positionsByUserByTradingPair => position_to_close.virtualIndexOnPositionsOpenByUserByTradingPair.read()
-            };
-
-            // change removed position state 
+        
+            // change removed position state on positions Vec 
             position_to_close.isOpen.write(false);
             position_to_close.virtualIndexOnPositionsOpen.write(0);
             position_to_close.virtualIndexOnPositionsOpenByUser.write(0);
             position_to_close.virtualIndexOnPositionsOpenByUserByTradingPair.write(0);
-            // self.positions.entry(hash).at(positionIndex).write(position_to_close);
 
-            // removing Position from view and updating moved one 
-            let latest_position_open_index = viewToUse.at(viewToUse.len()).read() - 1;
+            // Get latest position on the view
+            let latest_position_open_index = viewToUse.at(viewToUse.len()-1).read();
+            let mut latest_position = self.positions.entry(hash).at(latest_position_open_index);
             
-            let mut position: Position = self.positions.entry(hash).at(latest_position_open_index).read();
-            position.virtualIndexOnPositionsOpen = remove_index;
-            self.positions.entry(hash).at(latest_position_open_index).write(position);
+            // update latest position pointers to the new position on the view
+            match view {
+                super::View::positions => latest_position.virtualIndexOnPositionsOpen.write(remove_index), 
+                super::View::positionsByUser => latest_position.virtualIndexOnPositionsOpenByUser.write(remove_index), 
+                super::View::positionsByUserByTradingPair => latest_position.virtualIndexOnPositionsOpenByUserByTradingPair.write(remove_index), 
+            };
             
+            // replace position to remove with latest position and then pop and add latest to history 
             viewToUse.at(remove_index).write(latest_position_open_index);
             viewToUse.pop().unwrap();
             viewToUseClosed.push(positionIndex);
