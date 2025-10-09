@@ -1,48 +1,9 @@
-use starknet::{ContractAddress};
-
-#[derive(Drop, Serde, Copy, starknet::Store)]
-#[allow(starknet::store_no_default_variant)]
-enum Direction {
-    bullish,
-    bearish
-}
-
-#[derive(Drop, Serde, Copy)]
-enum View {
-    positions, 
-    positionsByUser,
-    positionsByUserByTradingPair
-}
-
-#[starknet::interface]
-pub trait IPositionManager<TContractState> {
-    // for traders
-    fn deposit_margin(ref self: TContractState, amount: u256);
-    fn open_position(ref self: TContractState, token: ContractAddress, margin_amount_to_use: u256, leverage: u8, direction: Direction ); 
-    fn close_position(ref self: TContractState, positionIndex: u64, token: ContractAddress); // in Positions vector  
-    fn liquidate_position(ref self: TContractState, positionIndex: u64, token: ContractAddress); // in Positions vector  
-    
-
-    // // for liquidators or keepers
-    // fn liquidate_position(ref self: TContractState, positionId: u256);
-
-    // // admins
-    // register new allowed trding pair 
-
-    // // getters 
-    // fn get_deposited_margin(self: @TContractState, address: ContractAddress) -> u256; // returns the totalDeposited margin 
-    // fn get_available_margin(self: @TContractState, address: ContractAddress) -> u256; // returns the unused margin amount
-    // fn get_position_health(self: @TContractState, positionId:u256) -> u256;
-    // fn estimate_assets_obtained(self: @TContractState, token: ContractAddress, margin_amount: u256, leverage: u8); // returns the amount of tokens that can be buyed with X amount of margin
-}
-
 // Internals 
 // calculate_required_margin 
 
 /// Simple contract for managing balance.
 #[starknet::contract]
 mod PositionManager {
-    use super::{IPositionManager,Direction};
 
     use core::hash::{HashStateExTrait, HashStateTrait};
     use core::pedersen::PedersenTrait;
@@ -57,6 +18,9 @@ mod PositionManager {
     use openzeppelin_token::erc20::{ERC20ABIDispatcher, ERC20ABIDispatcherTrait};
     use openzeppelin_token::erc20::extensions::erc4626::interface::{ERC4626ABIDispatcher, ERC4626ABIDispatcherTrait};
     // 
+
+    use leverage::Interfaces::PositionManager::{IPositionManager, View};
+    use leverage::Interfaces::Shared::{Direction, MarginState, Position, TradingPair};
     
 
     #[storage]
@@ -124,33 +88,6 @@ mod PositionManager {
         self.pool.write(pool);
     }
 
-    #[derive(Drop, Serde, starknet::Store)]
-    struct MarginState {
-        total: u256,
-        used: u256
-    }
-
-    #[derive(Drop, Serde, Copy, starknet::Store)]
-    struct Position {
-        isOpen: bool, // false when is closed or liquidated 
-        virtualIndexOnPositionsOpen: u64, // IT SHOULD ADD ON OF THIS FOR EACH POSITION VIEW, because index will be different or (maybe) make views mappings so I stora position on the same "index" key? will this overite other positions?
-        virtualIndexOnPositionsOpenByUser:u64,
-        virtualIndexOnPositionsOpenByUserByTradingPair:u64,
-        owner: ContractAddress, // the one who opens the position 
-        leverage: u8,
-        total_underlying_used: u256, // total_underlying_used/leverage = total margin used @dev this division should always has module=0 AKA when register multiplies, so this is the inverse 
-        total_traded_assets: u256, // the counter asset on the trading pair 
-        direction: Direction,
-        pair: TradingPair,
-        openPrice: u256 // the price of a unit of the traded assets in terms of the underlying asset -> this is what determine the price thick to be stored 
-    }
-
-    /// Trading pair used to separate positions by pair on storage
-    #[derive(Drop, Serde, Copy, Hash, starknet::Store)]
-    struct TradingPair {
-        underlying_asset: ContractAddress,
-        traded_asset: ContractAddress
-    }
 
     #[abi(embed_v0)]
     impl PositionManagerImpl of IPositionManager<ContractState> {
@@ -254,9 +191,9 @@ mod PositionManager {
             // make correspondant transfers  -> follow CEI this after below removes 
 
             // remove
-            self._remove_position_from_view(super::View::positions, positionIndex, token); 
-            self._remove_position_from_view(super::View::positionsByUser, positionIndex, token); 
-            self._remove_position_from_view(super::View::positionsByUserByTradingPair, positionIndex, token); 
+            self._remove_position_from_view(View::positions, positionIndex, token); 
+            self._remove_position_from_view(View::positionsByUser, positionIndex, token); 
+            self._remove_position_from_view(View::positionsByUserByTradingPair, positionIndex, token); 
 
             // emit event
         }
@@ -276,9 +213,9 @@ mod PositionManager {
             // make correspondant transfers -> follow CEI, do it bellow removes 
 
             // remove
-            self._remove_position_from_view(super::View::positions, positionIndex, token); 
-            self._remove_position_from_view(super::View::positionsByUser, positionIndex, token); 
-            self._remove_position_from_view(super::View::positionsByUserByTradingPair, positionIndex, token); 
+            self._remove_position_from_view(View::positions, positionIndex, token); 
+            self._remove_position_from_view(View::positionsByUser, positionIndex, token); 
+            self._remove_position_from_view(View::positionsByUserByTradingPair, positionIndex, token); 
 
             // emit event
         }
@@ -288,7 +225,7 @@ mod PositionManager {
     #[generate_trait]
     impl InternalFunctions of InternalFunctionsTrait {
         
-        fn _remove_position_from_view(ref self: ContractState, view:super::View,  positionIndex:u64, token:ContractAddress) {
+        fn _remove_position_from_view(ref self: ContractState, view:View,  positionIndex:u64, token:ContractAddress) {
             // basic variables
             let caller: ContractAddress = get_caller_address();
             let hash:felt252 = self.get_trading_pair_hash(token);
@@ -298,9 +235,9 @@ mod PositionManager {
 
             // search for the position on the specified view and get data needed to remove such position
             let (remove_index, viewToUse, viewToUseClosed) = match view {
-                super::View::positions => (position_to_close.virtualIndexOnPositionsOpen.read(),self.positionsOpen.entry(hash),self.positionsClosed.entry(hash)), 
-                super::View::positionsByUser => (position_to_close.virtualIndexOnPositionsOpenByUser.read(),self.positionsOpenByUser.entry(caller),self.positionsClosedByUser.entry(caller)),
-                super::View::positionsByUserByTradingPair => (position_to_close.virtualIndexOnPositionsOpenByUserByTradingPair.read(),self.positionsOpenByUserByTradingPair.entry(caller).entry(hash),self.positionsClosedByUserByTradingPair.entry(caller).entry(hash))
+                View::positions => (position_to_close.virtualIndexOnPositionsOpen.read(),self.positionsOpen.entry(hash),self.positionsClosed.entry(hash)), 
+                View::positionsByUser => (position_to_close.virtualIndexOnPositionsOpenByUser.read(),self.positionsOpenByUser.entry(caller),self.positionsClosedByUser.entry(caller)),
+                View::positionsByUserByTradingPair => (position_to_close.virtualIndexOnPositionsOpenByUserByTradingPair.read(),self.positionsOpenByUserByTradingPair.entry(caller).entry(hash),self.positionsClosedByUserByTradingPair.entry(caller).entry(hash))
             };
         
             // change removed position state on positions Vec 
@@ -315,9 +252,9 @@ mod PositionManager {
             
             // update latest position pointers to the new position on the view
             match view {
-                super::View::positions => latest_position.virtualIndexOnPositionsOpen.write(remove_index), 
-                super::View::positionsByUser => latest_position.virtualIndexOnPositionsOpenByUser.write(remove_index), 
-                super::View::positionsByUserByTradingPair => latest_position.virtualIndexOnPositionsOpenByUserByTradingPair.write(remove_index), 
+                View::positions => latest_position.virtualIndexOnPositionsOpen.write(remove_index), 
+                View::positionsByUser => latest_position.virtualIndexOnPositionsOpenByUser.write(remove_index), 
+                View::positionsByUserByTradingPair => latest_position.virtualIndexOnPositionsOpenByUserByTradingPair.write(remove_index), 
             };
             
             // replace position to remove with latest position and then pop and add latest to history 
@@ -345,7 +282,7 @@ mod PositionManager {
 //         /// 2. get such position from the positions vec
 //         /// 3. update the position with the new correspondant virtual values
 //         /// this has to be done for each view because the latest position for each one of this should be different
-//         fn _remove_position_from_view(ref self: ContractState, view:super::View,  positionIndex:u64, token:ContractAddress) {
+//         fn _remove_position_from_view(ref self: ContractState, view:View,  positionIndex:u64, token:ContractAddress) {
 //             let caller: ContractAddress = get_caller_address();
 //             let trading_pair:TradingPair = TradingPair { underlying_asset: self.underlying_asset.read(), traded_asset:token };
 //             let base:felt252 = Bounded::<u128>::MAX.into();
@@ -358,7 +295,7 @@ mod PositionManager {
 
 //             assert!(position_to_close.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
 //             match view {
-//                 super::View::positions => {
+//                 View::positions => {
 //                     let remove_index:u64 = position_to_close.virtualIndexOnPositionsOpen.read();
 //                     let latest_position_open_index = self.positionsOpen.entry(hash).at(self.positionsOpen.entry(hash).len()).read() - 1;
 //                     let mut position: Position = self.positions.entry(hash).at(latest_position_open_index).read();
@@ -368,7 +305,7 @@ mod PositionManager {
 //                     self.positionsOpen.entry(hash).pop().unwrap();
 //                     self.positionsClosed.entry(hash).push(positionIndex);
 //                 },
-//                 super::View::positionsByUser => {
+//                 View::positionsByUser => {
 //                     let remove_index:u64 = position_to_close.virtualIndexOnPositionsOpenByUser.read();
 //                     let latest_position_open_by_client_index = self.positionsOpenByUser.entry(caller).at(self.positionsOpenByUser.entry(caller).len()).read() - 1;
 //                     let mut position: Position = self.positions.entry(hash).at(latest_position_open_by_client_index).read();
@@ -378,7 +315,7 @@ mod PositionManager {
 //                     self.positionsOpenByUser.entry(caller).pop().unwrap();
 //                     self.positionsClosedByUser.entry(caller).push(positionIndex);
 //                 },
-//                 super::View::positionsByUserByTradingPair => {
+//                 View::positionsByUserByTradingPair => {
 //                     let remove_index:u64 = position_to_close.virtualIndexOnPositionsOpenByUserByTradingPair.read();
 //                     let latest_position_open_by_client_by_trading_pair_index = self.positionsOpenByUserByTradingPair.entry(caller).entry(hash).at(self.positionsOpenByUser.entry(caller).len()).read() - 1;
 //                     let mut position: Position = self.positions.entry(hash).at(latest_position_open_by_client_by_trading_pair_index).read();

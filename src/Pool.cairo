@@ -7,10 +7,6 @@
 
 use starknet::{ContractAddress};
 
-#[starknet::interface]
-pub trait IPool<TContractState> {
-    fn allow_token_usage_to_open_position(ref self: TContractState, token: ContractAddress, amount: u256); // @dev should only be callable by PositionManager contract to open positions and/or use funds 
-}
 
 /// Simple contract for managing balance.
 #[starknet::contract]
@@ -35,6 +31,8 @@ mod Pool {
     use openzeppelin_token::erc20::extensions::erc4626::{ERC4626DefaultNoFees, ERC4626DefaultLimits, ERC4626HooksEmptyImpl}; // @dev why this works by just import and no need to manually impl it?
     // dispatchers
     use openzeppelin_token::erc20::{ERC20ABIDispatcher, ERC20ABIDispatcherTrait};
+    //
+    use leverage::Interfaces::Pool::IPool;
     
     ////////////////////
     /// DECLARE COMPONENTS
@@ -109,7 +107,7 @@ mod Pool {
     ////////////////////
     /// CUSTOM LOGIC IMPLEMENTS
     ////////////////////
-    impl PoolImpl of super::IPool<ContractState> {
+    impl PoolImpl of IPool<ContractState> {
 
         /// @dev Important checks should be performed on the PositionManager everytime this function will be called -> Like check the current margin deposited of the caller, check the current used margin, check the health of the caller, etc 
         fn allow_token_usage_to_open_position(ref self: ContractState, token: ContractAddress, amount: u256) {
