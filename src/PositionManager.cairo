@@ -30,7 +30,7 @@ mod PositionManager {
         poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
         userMargin: Map<ContractAddress, MarginState>, // deposited and used margin for each user
         // TradingPair->positions
-        positions: Map<felt252,Vec<Position>>, // Only add, never remove AKA length ONLY INCREASES 
+        positions: Vec<Position>, // Only add, never remove AKA length ONLY INCREASES 
         positionsOpen: Map<felt252,Vec<u64>>, 
         positionsClosed: Map<felt252,Vec<u64>>,  
         positionsOpenByUser: Map<ContractAddress, Vec<u64>>, // User->positions 
@@ -91,7 +91,97 @@ mod PositionManager {
 
     #[abi(embed_v0)]
     impl PositionManagerImpl of IPositionManager<ContractState> {
+        /// GETTERS
+        fn get_user_margin_state(self: @ContractState, address: ContractAddress) -> MarginState {
+            self.userMargin.entry(address).read()
+        }
+
+        // @dev@todo implement calculation, this will be used by another functions too
+        fn get_position_health(self: @ContractState, token: ContractAddress, positionIndex:u64) -> u256 {
+            10_u256
+        }
+
+        fn get_positions(self: @ContractState, from:u64, to: u64) -> Array<Position> {
+            let mut array: Array<Position> = ArrayTrait::new();
+
+            for index in from..to {
+                array.append(self.positions[index].read());
+            };
+
+            array
+        }
+
+        fn get_positions_open(self: @ContractState, tradingPairHash: felt252, from:u64, to: u64) -> Array<Position> {
+            let mut array: Array<Position> = ArrayTrait::new();
+
+            for index in from..to {
+                let positionIndex = self.positionsOpen.entry(tradingPairHash)[index].read();
+                array.append(self.positions[positionIndex].read());
+            };
+
+            array
+        }
+
+        fn get_positions_closed(self: @ContractState, tradingPairHash: felt252, from:u64, to: u64) -> Array<Position> {
+            let mut array: Array<Position> = ArrayTrait::new();
+
+            for index in from..to {
+                let positionIndex = self.positionsClosed.entry(tradingPairHash)[index].read();
+                array.append(self.positions[positionIndex].read());
+            };
+
+            array
+        }
+
+        fn get_positions_open_by_user(self: @ContractState, user: ContractAddress, from:u64, to: u64) -> Array<Position> {
+            let mut array: Array<Position> = ArrayTrait::new();
+
+            for index in from..to {
+                let positionIndex = self.positionsOpenByUser.entry(user)[index].read();
+                array.append(self.positions[positionIndex].read());
+            };
+
+            array
+        }
         
+        fn get_positions_closed_by_user(self: @ContractState, user: ContractAddress, from:u64, to: u64) -> Array<Position> {
+            let mut array: Array<Position> = ArrayTrait::new();
+            
+            for index in from..to {
+                let positionIndex = self.positionsClosedByUser.entry(user)[index].read();
+                array.append(self.positions[positionIndex].read());
+            };
+            
+            array
+        }
+        
+        fn get_positions_open_by_user_by_trading_pair(self: @ContractState, user: ContractAddress, tradingPairHash: felt252, from:u64, to: u64) -> Array<Position> {
+            let mut array: Array<Position> = ArrayTrait::new();
+
+            for index in from..to {
+                let positionIndex = self.positionsOpenByUserByTradingPair.entry(user).entry(tradingPairHash)[index].read();
+                array.append(self.positions[positionIndex].read());
+            };
+
+            array
+        }
+
+        fn get_positions_closed_by_user_by_trading_pair(self: @ContractState, user: ContractAddress, tradingPairHash: felt252, from:u64, to: u64) -> Array<Position> {
+            let mut array: Array<Position> = ArrayTrait::new();
+
+            for index in from..to {
+                let positionIndex = self.positionsClosedByUserByTradingPair.entry(user).entry(tradingPairHash)[index].read();
+                array.append(self.positions[positionIndex].read());
+            };
+
+            array
+        }
+
+        fn get_trading_pair_hash(self: @ContractState, token:ContractAddress) -> felt252 {
+            self._get_trading_pair_hash(token)
+        }
+
+        ////
         fn deposit_margin(ref self: ContractState, amount: u256) {
             let caller = get_caller_address();
             // register depositor
@@ -165,8 +255,8 @@ mod PositionManager {
             // register on state 
             self.userMargin.entry(caller).write(new_user_margin); // register user margin
             // 
-            let index_of_new_position = self.positions.entry(hash).len();
-            self.positions.entry(hash).push(position); 
+            let index_of_new_position = self.positions.len();
+            self.positions.push(position); 
             self.positionsOpen.entry(hash).push(index_of_new_position);
             self.positionsOpenByUser.entry(caller).push(index_of_new_position);
             self.positionsOpenByUserByTradingPair.entry(caller).entry(hash).push(index_of_new_position);
@@ -177,8 +267,8 @@ mod PositionManager {
         fn close_position(ref self: ContractState, positionIndex: u64, token: ContractAddress) {
             // assertions 
             let caller = get_caller_address();
-            let hash:felt252 = self.get_trading_pair_hash(token); 
-            let position = self.positions.entry(hash).at(positionIndex); 
+            let hash:felt252 = self._get_trading_pair_hash(token); 
+            let position = self.positions.at(positionIndex); 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
             
@@ -195,14 +285,16 @@ mod PositionManager {
             self._remove_position_from_view(View::positionsByUser, positionIndex, token); 
             self._remove_position_from_view(View::positionsByUserByTradingPair, positionIndex, token); 
 
+            // modify margin state 
+
             // emit event
         }
 
         fn liquidate_position(ref self: ContractState, positionIndex: u64, token: ContractAddress) {
             // assertions 
             let caller = get_caller_address();
-            let hash:felt252 = self.get_trading_pair_hash(token); 
-            let position = self.positions.entry(hash).at(positionIndex); 
+            let hash:felt252 = self._get_trading_pair_hash(token); 
+            let position = self.positions.at(positionIndex); 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
 
@@ -217,6 +309,8 @@ mod PositionManager {
             self._remove_position_from_view(View::positionsByUser, positionIndex, token); 
             self._remove_position_from_view(View::positionsByUserByTradingPair, positionIndex, token); 
 
+            // modify margin state 
+
             // emit event
         }
     
@@ -228,10 +322,10 @@ mod PositionManager {
         fn _remove_position_from_view(ref self: ContractState, view:View,  positionIndex:u64, token:ContractAddress) {
             // basic variables
             let caller: ContractAddress = get_caller_address();
-            let hash:felt252 = self.get_trading_pair_hash(token);
+            let hash:felt252 = self._get_trading_pair_hash(token);
 
             // get position to be closed 
-            let mut position_to_close = self.positions.entry(hash).at(positionIndex);
+            let mut position_to_close = self.positions.at(positionIndex);
 
             // search for the position on the specified view and get data needed to remove such position
             let (remove_index, viewToUse, viewToUseClosed) = match view {
@@ -248,7 +342,7 @@ mod PositionManager {
 
             // Get latest position on the view
             let latest_position_open_index = viewToUse.at(viewToUse.len()-1).read();
-            let mut latest_position = self.positions.entry(hash).at(latest_position_open_index);
+            let mut latest_position = self.positions.at(latest_position_open_index);
             
             // update latest position pointers to the new position on the view
             match view {
@@ -263,7 +357,7 @@ mod PositionManager {
             viewToUseClosed.push(positionIndex);
         }
 
-        fn get_trading_pair_hash(self:@ContractState, token: ContractAddress) -> felt252 {
+        fn _get_trading_pair_hash(self:@ContractState, token: ContractAddress) -> felt252 {
             let trading_pair:TradingPair = TradingPair { underlying_asset: self.underlying_asset.read(), traded_asset:token };
             PedersenTrait::new(Bounded::<u128>::MAX.into()).update_with(trading_pair).finalize()
         }
