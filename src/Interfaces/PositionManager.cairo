@@ -16,7 +16,9 @@ pub trait IPositionManager<TContractState> {
     fn liquidate_position(ref self: TContractState, positionIndex: u64, token: ContractAddress); // in Positions vector  
 
     // // admins
-    // register new allowed trding pair 
+    // register new allowed trding pair
+    fn add_new_trading_pair_pool(ref self: TContractState, token: ContractAddress, pool: ContractAddress); 
+    fn remove_trading_pair_pool(ref self: TContractState, token: ContractAddress);
 
     // // getters 
     fn get_user_margin_state(self: @TContractState, address: ContractAddress) -> MarginState; // returns the totalDeposited margin 

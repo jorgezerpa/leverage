@@ -25,6 +25,8 @@ mod PositionManager {
 
     #[storage]
     struct Storage {
+        admin: ContractAddress, // Multisig wallet at the beggining, then maybe could be a DAO
+        //
         underlying_asset: ContractAddress, // to do -> read this from pool, not store it here 
         pool: ContractAddress, // lending pool -> Pool contract 
         poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
@@ -37,7 +39,8 @@ mod PositionManager {
         positionsClosedByUser: Map<ContractAddress, Vec<u64>>, // Historical purposes only -> added when liquidates or closes
         positionsOpenByUserByTradingPair: Map<ContractAddress, Map<felt252,Vec<u64>>>, // User->pair->positions 
         positionsClosedByUserByTradingPair: Map<ContractAddress, Map<felt252,Vec<u64>>>, // User->pair->positions 
-
+        //
+        tradingPairPools: Map<felt252, ContractAddress>,
     }
 
     // The storage variables are a bit complex, but this structure is aiming for:
@@ -81,9 +84,11 @@ mod PositionManager {
     #[constructor]
     fn constructor(
         ref self: ContractState,
+        admin: ContractAddress,
         underlying_asset: ContractAddress,
         pool: ContractAddress,
     ) {
+        self.admin.write(admin);
         self.underlying_asset.write(underlying_asset);
         self.pool.write(pool);
     }
@@ -180,6 +185,22 @@ mod PositionManager {
         fn get_trading_pair_hash(self: @ContractState, token:ContractAddress) -> felt252 {
             self._get_trading_pair_hash(token)
         }
+        
+        //// ADMIN 
+        
+        /// @notice this functions can be used also to "pause|unpause" a trading pair trading 
+        fn add_new_trading_pair_pool(ref self: ContractState, token: ContractAddress, pool: ContractAddress) {
+            assert!(get_caller_address()==self.admin.read(), "ONLY ADMIN");
+            let hash = self._get_trading_pair_hash(token);
+            self.tradingPairPools.entry(hash).write(pool);            
+        } 
+        fn remove_trading_pair_pool(ref self: ContractState, token: ContractAddress) {
+            assert!(get_caller_address()==self.admin.read(), "ONLY ADMIN");
+            let hash = self._get_trading_pair_hash(token);
+            let zero_address: ContractAddress = 0_felt252.try_into().unwrap();
+            self.tradingPairPools.entry(hash).write(zero_address);
+        }
+        
 
         ////
         fn deposit_margin(ref self: ContractState, amount: u256) {
@@ -267,7 +288,6 @@ mod PositionManager {
         fn close_position(ref self: ContractState, positionIndex: u64, token: ContractAddress) {
             // assertions 
             let caller = get_caller_address();
-            let hash:felt252 = self._get_trading_pair_hash(token); 
             let position = self.positions.at(positionIndex); 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
@@ -293,7 +313,6 @@ mod PositionManager {
         fn liquidate_position(ref self: ContractState, positionIndex: u64, token: ContractAddress) {
             // assertions 
             let caller = get_caller_address();
-            let hash:felt252 = self._get_trading_pair_hash(token); 
             let position = self.positions.at(positionIndex); 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
