@@ -17,6 +17,8 @@ mod PositionManager {
 
     use leverage::Interfaces::PositionManager::{IPositionManager, View};
     use leverage::Interfaces::Shared::{Direction, MarginState, Position};
+    use leverage::Interfaces::Adapters::EkuboAMMMarginTradingAdapter::{IEkuboAMMMarginTradingAdapterDispatcher,IEkuboAMMMarginTradingAdapterDispatcherTrait};
+    use leverage::Interfaces::Pool::{IPoolDispatcher, IPoolDispatcherTrait};
 
     const POSITIONS_VECTOR_KEY: felt252 = 0;
     
@@ -25,6 +27,7 @@ mod PositionManager {
     struct Storage {
         admin: ContractAddress, // Multisig wallet at the beggining, then maybe could be a DAO
         underlying_asset: ContractAddress, // to do -> read this from pool, not store it here 
+        adapter: ContractAddress,
         pool: ContractAddress, // lending pool -> Pool contract 
         poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
         userMargin: Map<ContractAddress, MarginState>, // deposited and used margin for each user
@@ -33,6 +36,7 @@ mod PositionManager {
         positionsClosed: Map<felt252,Vec<u64>>,  
         positionsOpenByUser: Map<ContractAddress, Vec<u64>>, // User->positions 
         positionsClosedByUser: Map<ContractAddress, Vec<u64>>, // Historical purposes only -> added when liquidates or closes
+        adapterTradeData: Map<u64, Vec<felt252>> // positionId->tradeData // used to store extra data that could return a third party protocol -> it is an array of felts, to decode it into actual types, you can call adapter.get_trade_data_types 
     }
 
      ////////////////////
@@ -43,10 +47,12 @@ mod PositionManager {
         ref self: ContractState,
         admin: ContractAddress,
         underlying_asset: ContractAddress,
+        adapter: ContractAddress,
         pool: ContractAddress,
     ) {
         self.admin.write(admin);
         self.underlying_asset.write(underlying_asset);
+        self.adapter.write(adapter);
         self.pool.write(pool);
     }
 
@@ -134,7 +140,7 @@ mod PositionManager {
         }
         
 
-        fn open_position(ref self: ContractState, margin_amount_to_use: u256, leverage: u8, direction: Direction ){
+        fn open_position(ref self: ContractState, margin_amount_to_use: u256, leverage: u8, direction: Direction, data:Array<felt252>){
             // 1. BASIC VARIABLES
             let caller:ContractAddress = get_caller_address();
             let current_user_margin:MarginState = self.userMargin.entry(caller).read();
@@ -145,27 +151,17 @@ mod PositionManager {
             // checks
             assert!(available_margin >= margin_amount_to_use, "USER HAS NOT ENOUGH MARGIN DEPOSITED"); // the user has enough margin 
             assert!(pool.total_assets()>=total_underlying_to_use, "NOT ENOUGH LIQUIDITY ON THE POOL"); // the available liquidity on the pool is enough to cover the leverage requierement
-            // assert!(trading pair is whitelisted ) @TODO
+            // assert!(leverage is a valid multiplier);
             
-            // 2. SWAP LOGIC
-            let mut traded_asset_price:u256 = 0;
-            let mut total_traded_asset = 0; // obtained or "selled" depending on direction
 
-            match direction {
-                Direction::bullish => {
-                    // If direction is bullish, perform a swap "underlying->counter"
-                    traded_asset_price = 1000000_u256; // simulate result for unit counter price calculation -> this is used to store the Position on the correspondant price range 
-                    total_traded_asset = 10000000_u256; // simulate 10 counter tokens was buyed
-                },
-                Direction::bearish => {
-                    // IF direction is bearish, then do not perform the swap, just fetch the price and set apart the correspondant underlying to rebuy the asset when close the position
-                    // (this is equivalent to swap the counter for the underlying to go short)
-                    // @dev when close the position, we will buy the counter token and give it back to the trader, so -> the part the protocol keeps should be swaped to underlying 
-                    // @dev should we still make a swap? because the user should deposit or directly transfer the counter they want to sell. OR we just take the equivalent from the deposited margin in underlying? so if they wants to get rid of his counter, they have to swap it and then deposit it here? if choose this last option, we should abstract that swap logic directly -> like give the options "use margin" or "deposit counter" -> this could be made on the front? or it's better to embed on this function as receive a paramenter to choose? or create another specific function follwing DRY principle?
-                    traded_asset_price = 1000000_u256;  
-                    total_traded_asset = 10000000_u256; 
-                }
-            }
+            // 2. trade with adapter @audit possible vul not follow CEI
+            let pool = IPoolDispatcher{contract_address: self.pool.read()};
+            pool.transfer_assets_to_trade(total_underlying_to_use, self.adapter.read());
+            
+            let adapter = IEkuboAMMMarginTradingAdapterDispatcher{ contract_address: self.adapter.read() };
+            let mut array: Array<felt252> = ArrayTrait::new();
+            // @todo use returned data in a event or store it in position data, etc
+            let (traded_asset_price, total_traded_asset, trade_data) = adapter.trade(total_underlying_to_use, direction, array); // This should -> swap tokens on ekubo, return the price of the individual traded asset value, and the total traded asset buyed 
 
             // 3. REGISTER ON STATE
             // setup position  
@@ -180,6 +176,7 @@ mod PositionManager {
                 direction,
                 openPrice: traded_asset_price
             };
+
             // setup margin 
             let new_user_margin = MarginState { total: current_user_margin.total, used: current_user_margin.used + margin_amount_to_use };
             
@@ -190,26 +187,36 @@ mod PositionManager {
             self.positions.push(position); 
             self.positionsOpen.entry(POSITIONS_VECTOR_KEY).push(index_of_new_position);
             self.positionsOpenByUser.entry(caller).push(index_of_new_position);
+            //
+            let adapterTradeDataVec = self.adapterTradeData.entry(index_of_new_position);
+            for item in trade_data {
+                adapterTradeDataVec.push(item);
+            }
 
             // emit event 
         }
 
         fn close_position(ref self: ContractState, positionIndex: u64) {
-            // assertions 
+            //1. assertions 
             let caller = get_caller_address();
             let position = self.positions.at(positionIndex); 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
-            
             // Check:
             // health of position to check if can close it or needs to deposit collateral first 
             // in case of loss -> how much should protocol keep from margin to cover losses (in case of loss)
             // in case of profit -> how much should the procol take on fees 
             // how much should send to the user 
 
-            // make correspondant transfers  -> follow CEI this after below removes 
+            // 2. adapter calls @audit possible vul not follow CEI
+            // adapter.untrade(position) 
+            //  -> performs close position logic, like -> swaps, execute options or functions, etc 
+            //  -> will transfer value to THIS so we can perform validations 
 
-            // remove
+            // 3. make correspondant transfers  
+
+
+            // 4. STATE UPDATES
             self._remove_position_from_view(View::positions, positionIndex); 
             self._remove_position_from_view(View::positionsByUser, positionIndex); 
 
@@ -219,19 +226,19 @@ mod PositionManager {
         }
 
         fn liquidate_position(ref self: ContractState, positionIndex: u64) {
-            // assertions 
+            // 1. assertions 
             let caller = get_caller_address();
             let position = self.positions.at(positionIndex); 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
-
             // check:
             // health state -> can be liquidated?
             // calculate -> how much back to the pool, how much as protocol fees
             
             // make correspondant transfers -> follow CEI, do it bellow removes 
+            // 3. adapter.untrade(position)
 
-            // remove
+            // STATE UPDATE
             self._remove_position_from_view(View::positions, positionIndex); 
             self._remove_position_from_view(View::positionsByUser, positionIndex); 
 

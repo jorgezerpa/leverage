@@ -110,14 +110,16 @@ mod Pool {
     impl PoolImpl of IPool<ContractState> {
 
         /// @dev Important checks should be performed on the PositionManager everytime this function will be called -> Like check the current margin deposited of the caller, check the current used margin, check the health of the caller, etc 
-        fn allow_token_usage_to_open_position(ref self: ContractState, token: ContractAddress, amount: u256) {
+        fn transfer_assets_to_trade(ref self: ContractState, amount: u256, to: ContractAddress) {
             let caller = get_caller_address();
             assert!(caller==self.positionManager.read(), "ONLY POSITION MANAGER"); // @todo create constant file to hold error strings
-            let token = ERC20ABIDispatcher { contract_address: token };
+            
+            let token = ERC20ABIDispatcher { contract_address: self.erc4626.asset() };
             // @audit what if token doesn't return anything? -> should be an invariant in whitelisted tokens? like "LISTED TOKENS ALWAYS RETURN A BOOLEAN DURING APPROVES"
             // @TODO use safe libraries like in Solidity (if possible)
-            let success = token.approve(caller, amount);
-            assert!(success, "FAILED APPROVAL");
+            let success = token.transfer(to, amount);
+            assert!(success, "FAILED TRANSFER");
+        
         }
 
     }
