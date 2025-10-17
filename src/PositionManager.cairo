@@ -30,7 +30,6 @@ mod PositionManager {
         pool: ContractAddress, // lending pool -> Pool contract 
         poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
         userMargin: Map<ContractAddress, MarginState>, // deposited and used margin for each user
-        // @todo@audit NOT store a position on index 0, because that is where "deleted" positions will be replaced with on views 
         positions: Vec<Position>, // length ONLY INCREASES 
         positionsOpen: Map<felt252,Vec<u64>>, // the map has a single key -> POSITIONS_VECTOR_KEY, this is for return type matching during match sentences btw position and positions by user (one is a direct vector, the other is a pointer to the vector)
         positionsClosed: Map<felt252,Vec<u64>>,  
@@ -52,6 +51,21 @@ mod PositionManager {
         self.admin.write(admin);
         self.adapter.write(adapter);
         self.pool.write(pool);
+
+        // set the first position index to a empty position -> when a position is closed or liquidated, view pointers will point to this index 
+        let position:Position = Position {
+            isOpen: false,
+            virtualIndexOnPositionsOpen: 0, 
+            virtualIndexOnPositionsOpenByUser: 0,
+            owner:'0'_felt252.try_into().unwrap(), 
+            leverage: 0,
+            total_underlying_used: 0,  
+            total_traded_assets: 0,  
+            direction: Direction::bullish,
+            openPrice: 0
+        };
+        
+        self.positions.push(position); 
     }
 
 
@@ -147,6 +161,7 @@ mod PositionManager {
             let success = token.transfer_from(caller, self.pool.read(), amount);
             
             assert!(success, "FAILED TRANSFER_FROM");
+            // assert!(new balance - prev balance is equal to amount)
             
         }
         
