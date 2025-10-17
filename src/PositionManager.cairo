@@ -31,6 +31,7 @@ mod PositionManager {
         pool: ContractAddress, // lending pool -> Pool contract 
         poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
         userMargin: Map<ContractAddress, MarginState>, // deposited and used margin for each user
+        // @todo@audit NOT store a position on index 0, because that is where "deleted" positions will be replaced with on views 
         positions: Vec<Position>, // length ONLY INCREASES 
         positionsOpen: Map<felt252,Vec<u64>>, // the map has a single key -> POSITIONS_VECTOR_KEY, this is for return type matching during match sentences btw position and positions by user (one is a direct vector, the other is a pointer to the vector)
         positionsClosed: Map<felt252,Vec<u64>>,  
@@ -122,6 +123,18 @@ mod PositionManager {
             
             array
         }
+
+        fn get_trade_data(self:@ContractState, positionIndex:u64) -> Array<felt252> {
+            let mut data = ArrayTrait::<felt252>::new();
+            let positionTradeData = self.adapterTradeData.entry(positionIndex);
+            let numberOfItems:u64 = positionTradeData[0].read().try_into().unwrap(); // panics if conversion is not possible //  @audit Compiler does not allow to call .len(), so this is a temporary solution, not hte most secure 
+
+            for i in 0..numberOfItems { 
+                data.append(positionTradeData[i].read());
+            }
+            
+            data
+        }
         
 
         ////
@@ -209,12 +222,14 @@ mod PositionManager {
             // how much should send to the user 
 
             // 2. adapter calls @audit possible vul not follow CEI
-            // adapter.untrade(position) 
-            //  -> performs close position logic, like -> swaps, execute options or functions, etc 
-            //  -> will transfer value to THIS so we can perform validations 
+            let adapter = IEkuboAMMMarginTradingAdapterDispatcher{ contract_address: self.adapter.read() };
+            adapter.untrade(positionIndex); //  -> performs close position logic, like -> swaps, execute options or futures, etc
+
+            // @INVARIANT close a position should always finish with non-traded-assets and only underlaying asset
+            //  -> will transfer value to THIS so we can perform validations -> @dev todo should calculate a expected amount and return if it was not achieved? -> like a pre-calc and a slippage tolerance?
 
             // 3. make correspondant transfers  
-
+            // for trader, for pool and for protocol 
 
             // 4. STATE UPDATES
             self._remove_position_from_view(View::positions, positionIndex); 

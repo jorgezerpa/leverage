@@ -22,6 +22,8 @@ pub trait IPositionManager<TContractState> {
     fn get_positions_closed(self: @TContractState, from:u64, to: u64) -> Array<Position>;
     fn get_positions_open_by_user(self: @TContractState, user: ContractAddress, from:u64, to: u64) -> Array<Position>;
     fn get_positions_closed_by_user(self: @TContractState, user: ContractAddress, from:u64, to: u64) -> Array<Position>;
+    //
+    fn get_trade_data(self:@TContractState, positionIndex:u64) -> Array<felt252>; // any useful data that the 3rd party protocol returns -> first item (u8) is the length (inclusive) of the array AKA the amount of items it holds @audit this was made because compiler doesnt allow to call len() on vecs in view functions, so it was this OR convert it into "Ref self" but then users would have to pay gas just for view  
 }
 
 #[derive(Drop, Serde, Copy)]
