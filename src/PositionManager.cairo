@@ -26,7 +26,6 @@ mod PositionManager {
     #[storage]
     struct Storage {
         admin: ContractAddress, // Multisig wallet at the beggining, then maybe could be a DAO
-        underlying_asset: ContractAddress, // to do -> read this from pool, not store it here 
         adapter: ContractAddress,
         pool: ContractAddress, // lending pool -> Pool contract 
         poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
@@ -47,12 +46,10 @@ mod PositionManager {
     fn constructor(
         ref self: ContractState,
         admin: ContractAddress,
-        underlying_asset: ContractAddress,
         adapter: ContractAddress,
         pool: ContractAddress,
     ) {
         self.admin.write(admin);
-        self.underlying_asset.write(underlying_asset);
         self.adapter.write(adapter);
         self.pool.write(pool);
     }
@@ -145,7 +142,8 @@ mod PositionManager {
             self.userMargin.entry(caller).write(newMarginState);
             
             // get funds
-            let token = ERC20ABIDispatcher { contract_address: self.underlying_asset.read() };
+            let pool:ERC4626ABIDispatcher = ERC4626ABIDispatcher { contract_address: self.pool.read()};
+            let token = ERC20ABIDispatcher { contract_address: pool.asset() };
             let success = token.transfer_from(caller, self.pool.read(), amount);
             
             assert!(success, "FAILED TRANSFER_FROM");
