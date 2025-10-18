@@ -1,21 +1,35 @@
-#[starknet::contract]
-mod EkuboAMMMarginTradingAdapter {
+use leverage::Interfaces::Shared::{Direction};
 
-    use starknet::storage::{Vec, MutableVecTrait};
+#[starknet::interface]
+pub trait IMockTradingAdapter<TContractState> {
+    fn trade(ref self: TContractState, amount: u256, direction: Direction, data: Array<felt252>) -> (u256, u256, Array<felt252>); // return unit price and total acquired traded asset
+    fn untrade(ref self: TContractState, position_index: u64);
+    fn get_trade_data_types(self: @TContractState) -> Array<felt252>;
+    fn set_trade_data_types(ref self: TContractState, types: Array<felt252>); // ONLY ADMIN
+}
+
+#[starknet::contract]
+mod MockTradingAdapter {
+    use starknet::{ContractAddress, get_caller_address};
+use starknet::storage::{Vec, MutableVecTrait};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
-    use leverage::Interfaces::Adapters::EkuboAMMMarginTradingAdapter::IEkuboAMMMarginTradingAdapter;
+    use super::IMockTradingAdapter;
     use leverage::Interfaces::Shared::{Direction};
 
     #[storage]
     struct Storage {
-        tradeDataTypes: Vec<felt252> // allowed types -> 'integer', 'string', 'address'
+        positionManager: ContractAddress,
+        tradeDataTypes: Vec<felt252>, // allowed types -> 'integer', 'string', 'address'
     }
 
     #[constructor]
-    fn constructor(ref self: ContractState) {}
+    fn constructor(ref self: ContractState, positionManager: ContractAddress) {
+        self.positionManager.write(positionManager);
+    }
 
-    impl EkuboAMMMarginTradingAdapter of IEkuboAMMMarginTradingAdapter<ContractState> {
+    impl EkuboAMMMarginTradingAdapter of IMockTradingAdapter<ContractState> {
         fn trade(ref self: ContractState, amount: u256, direction: Direction, data: Array<felt252>) -> (u256, u256, Array<felt252>){
+            assert!(get_caller_address() == self.positionManager.read(), "ONLY POSITION MANAGER");
                         // this is custom logic for ekubo adapter 
                 // match direction {
                 //     Direction::bullish => {
@@ -38,6 +52,7 @@ mod EkuboAMMMarginTradingAdapter {
         } 
 
         fn untrade(ref self: ContractState, position_index: u64) {
+            assert!(get_caller_address() == self.positionManager.read(), "ONLY POSITION MANAGER");
             
         }
 
@@ -80,7 +95,7 @@ mod EkuboAMMMarginTradingAdapter {
             }
             
         }
-
     }
 
 }
+

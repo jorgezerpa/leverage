@@ -45,12 +45,8 @@ mod PositionManager {
     fn constructor(
         ref self: ContractState,
         admin: ContractAddress,
-        adapter: ContractAddress,
-        pool: ContractAddress,
     ) {
         self.admin.write(admin);
-        self.adapter.write(adapter);
-        self.pool.write(pool);
 
         // set the first position index to a empty position -> when a position is closed or liquidated, view pointers will point to this index 
         let position:Position = Position {
@@ -275,6 +271,18 @@ mod PositionManager {
             // emit event
         }
     
+        // ADMIN
+        fn set_pool(ref self: ContractState, pool_address: ContractAddress) {
+            assert!(self.admin.read() == get_caller_address(), "ONLY ADMIN");
+            self.pool.write(pool_address);
+        }
+
+        fn set_adapter(ref self: ContractState, pool_address: ContractAddress) {
+            assert!(self.admin.read() == get_caller_address(), "ONLY ADMIN");
+            self.adapter.write(pool_address);
+        }
+
+
     }    
 
     #[generate_trait]

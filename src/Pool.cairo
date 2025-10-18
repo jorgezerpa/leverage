@@ -76,15 +76,12 @@ mod Pool {
         ref self: ContractState,
         name: ByteArray,
         symbol: ByteArray,
-        fixed_supply: u256,
-        recipient: ContractAddress,
         underlying_asset: ContractAddress,
         // 
         positionManager: ContractAddress
     ) {
         // erc20
         self.erc20.initializer(name, symbol);
-        self.erc20.mint(recipient, fixed_supply);
         // erc4626
         self.erc4626.initializer(underlying_asset);
         // custom storage
