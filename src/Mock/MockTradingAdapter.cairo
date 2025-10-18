@@ -30,7 +30,7 @@ use starknet::storage::{Vec, MutableVecTrait};
     impl EkuboAMMMarginTradingAdapter of IMockTradingAdapter<ContractState> {
         fn trade(ref self: ContractState, amount: u256, direction: Direction, data: Array<felt252>) -> (u256, u256, Array<felt252>){
             assert!(get_caller_address() == self.positionManager.read(), "ONLY POSITION MANAGER");
-                        // this is custom logic for ekubo adapter 
+                // this is custom logic for ekubo adapter 
                 // match direction {
                 //     Direction::bullish => {
                 //         // If direction is bullish, perform a swap "underlying->counter"
