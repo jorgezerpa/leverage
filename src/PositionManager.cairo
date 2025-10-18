@@ -86,6 +86,16 @@ mod PositionManager {
 
             array
         }
+        
+        fn get_position_from_view(self: @ContractState, indexes:Array<u64>) -> Array<Position> {
+            let mut array: Array<Position> = ArrayTrait::new();
+    
+            for index in indexes {
+                array.append(self.positions[index].read());
+            };
+    
+            array
+        }
 
         fn get_positions_open(self: @ContractState, from:u64, to: u64) -> Array<Position> {
             let mut array: Array<Position> = ArrayTrait::new();
@@ -142,6 +152,17 @@ mod PositionManager {
             
             data
         }
+
+        fn get_pool(self: @ContractState) -> ContractAddress {
+            self.pool.read()
+        }
+        fn get_adapter(self: @ContractState) -> ContractAddress {
+            self.adapter.read()
+        }
+        fn get_admin(self: @ContractState) -> ContractAddress {
+            self.admin.read()
+        }
+        
         
 
         ////

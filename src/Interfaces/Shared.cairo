@@ -20,7 +20,7 @@ pub struct Position {
 }
 
 
-#[derive(Drop, Serde, Copy, starknet::Store)]
+#[derive(Drop, Serde, Copy, starknet::Store, PartialEq)]
 #[allow(starknet::store_no_default_variant)]
 pub enum Direction {
     bullish,

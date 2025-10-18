@@ -18,6 +18,7 @@ pub trait IPositionManager<TContractState> {
     fn get_position_health(self: @TContractState, positionIndex:u64) -> u256;
     //
     fn get_positions(self: @TContractState, from:u64, to: u64) -> Array<Position>;
+    fn get_position_from_view(self: @TContractState, indexes:Array<u64>) -> Array<Position>;
     fn get_positions_open(self: @TContractState, from:u64, to: u64) -> Array<Position>;
     fn get_positions_closed(self: @TContractState, from:u64, to: u64) -> Array<Position>;
     fn get_positions_open_by_user(self: @TContractState, user: ContractAddress, from:u64, to: u64) -> Array<Position>;
@@ -28,6 +29,10 @@ pub trait IPositionManager<TContractState> {
     // admin
     fn set_pool(ref self: TContractState, pool_address: ContractAddress);
     fn set_adapter(ref self: TContractState, pool_address: ContractAddress);
+    fn get_pool(self: @TContractState) -> ContractAddress;
+    fn get_adapter(self: @TContractState) -> ContractAddress;
+    fn get_admin(self: @TContractState) -> ContractAddress;
+    
 }
 
 #[derive(Drop, Serde, Copy)]
