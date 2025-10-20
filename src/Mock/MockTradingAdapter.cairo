@@ -1,25 +1,18 @@
 use leverage::Interfaces::Shared::{Direction};
-
-#[starknet::interface]
-pub trait IMockTradingAdapter<TContractState> {
-    fn trade(ref self: TContractState, amount: u256, direction: Direction, data: Array<felt252>) -> (u256, u256, Array<felt252>); // return unit price and total acquired traded asset
-    fn untrade(ref self: TContractState, position_index: u64);
-    fn get_trade_data_types(self: @TContractState) -> Array<felt252>;
-    fn set_trade_data_types(ref self: TContractState, types: Array<felt252>); // ONLY ADMIN
-}
+use leverage::Interfaces::Adapters::AdapterBase::IAdapterBase;
 
 #[starknet::contract]
 mod MockTradingAdapter {
     use starknet::{ContractAddress, get_caller_address};
 use starknet::storage::{Vec, MutableVecTrait};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
-    use super::IMockTradingAdapter;
+    use super::IAdapterBase;
     use leverage::Interfaces::Shared::{Direction};
 
     #[storage]
     struct Storage {
         positionManager: ContractAddress,
-        tradeDataTypes: Vec<felt252>, // allowed types -> 'integer', 'string', 'address'
+        tradeDataTypes: Vec<felt252>, // allowed types -> 'integer', 'string', 'address' -> returned data types 
     }
 
     #[constructor]
@@ -27,7 +20,8 @@ use starknet::storage::{Vec, MutableVecTrait};
         self.positionManager.write(positionManager);
     }
 
-    impl EkuboAMMMarginTradingAdapter of IMockTradingAdapter<ContractState> {
+    #[abi(embed_v0)]
+    impl EkuboAMMMarginTradingAdapter of IAdapterBase<ContractState> {
         fn trade(ref self: ContractState, amount: u256, direction: Direction, data: Array<felt252>) -> (u256, u256, Array<felt252>){
             assert!(get_caller_address() == self.positionManager.read(), "ONLY POSITION MANAGER");
                 // this is custom logic for ekubo adapter 
@@ -47,8 +41,9 @@ use starknet::storage::{Vec, MutableVecTrait};
                 //     }
                 // }
             let mut tradeData:Array<felt252> = ArrayTrait::new(); // any useful data that the 3rd party protocol returns 
-            tradeData.append(1); // first element should always be the length of the data 
-            (1,1, tradeData)
+            tradeData.append(1); // first element should always be the length of the data
+            // RETURN MOCK VALUES TO EVALUATE ON TESTS -> this values should be correctly on Position  
+            (0,0, tradeData) // traded_asset_price, total_traded_asset, trade_data
         } 
 
         fn untrade(ref self: ContractState, position_index: u64) {

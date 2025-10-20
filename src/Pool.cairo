@@ -104,6 +104,7 @@ mod Pool {
     ////////////////////
     /// CUSTOM LOGIC IMPLEMENTS
     ////////////////////
+    #[abi(embed_v0)]
     impl PoolImpl of IPool<ContractState> {
 
         /// @dev Important checks should be performed on the PositionManager everytime this function will be called -> Like check the current margin deposited of the caller, check the current used margin, check the health of the caller, etc 

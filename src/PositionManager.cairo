@@ -17,7 +17,7 @@ mod PositionManager {
 
     use leverage::Interfaces::PositionManager::{IPositionManager, View};
     use leverage::Interfaces::Shared::{Direction, MarginState, Position};
-    use leverage::Interfaces::Adapters::EkuboAMMMarginTradingAdapter::{IEkuboAMMMarginTradingAdapterDispatcher,IEkuboAMMMarginTradingAdapterDispatcherTrait};
+    use leverage::Interfaces::Adapters::AdapterBase::{IAdapterBaseDispatcher,IAdapterBaseDispatcherTrait};
     use leverage::Interfaces::Pool::{IPoolDispatcher, IPoolDispatcherTrait};
 
     const POSITIONS_VECTOR_KEY: felt252 = 0;
@@ -140,6 +140,26 @@ mod PositionManager {
             
             array
         }
+        
+        fn get_indexes_of_positions_open_by_user(self: @ContractState, user: ContractAddress, from:u64, to: u64) -> Array<u64> {
+            let mut array: Array<u64> = ArrayTrait::new();
+            
+            for index in from..to {
+                array.append(self.positionsOpenByUser.entry(user)[index].read());
+            };
+            
+            array
+        }
+
+        fn get_indexes_of_positions_closed_by_user(self: @ContractState, user: ContractAddress, from:u64, to: u64) -> Array<u64> {
+            let mut array: Array<u64> = ArrayTrait::new();
+            
+            for index in from..to {
+                array.append(self.positionsClosedByUser.entry(user)[index].read());
+            };
+            
+            array
+        }
 
         fn get_trade_data(self:@ContractState, positionIndex:u64) -> Array<felt252> {
             let mut data = ArrayTrait::<felt252>::new();
@@ -194,17 +214,16 @@ mod PositionManager {
             // checks
             assert!(available_margin >= margin_amount_to_use, "USER HAS NOT ENOUGH MARGIN DEPOSITED"); // the user has enough margin 
             assert!(pool.total_assets()>=total_underlying_to_use, "NOT ENOUGH LIQUIDITY ON THE POOL"); // the available liquidity on the pool is enough to cover the leverage requierement
-            // assert!(leverage is a valid multiplier);
+            // @todo assert!(leverage is a valid multiplier);
             
 
             // 2. trade with adapter @audit possible vul not follow CEI
             let pool = IPoolDispatcher{contract_address: self.pool.read()};
             pool.transfer_assets_to_trade(total_underlying_to_use, self.adapter.read());
             
-            let adapter = IEkuboAMMMarginTradingAdapterDispatcher{ contract_address: self.adapter.read() };
-            let mut array: Array<felt252> = ArrayTrait::new();
-            // @todo use returned data in a event or store it in position data, etc
-            let (traded_asset_price, total_traded_asset, trade_data) = adapter.trade(total_underlying_to_use, direction, array); // This should -> swap tokens on ekubo, return the price of the individual traded asset value, and the total traded asset buyed 
+            let adapter = IAdapterBaseDispatcher{ contract_address: self.adapter.read() };
+           
+            let (traded_asset_price, total_traded_asset, trade_data) = adapter.trade(total_underlying_to_use, direction, data); // This should -> swap tokens on ekubo, return the price of the individual traded asset value, and the total traded asset buyed 
 
             // 3. REGISTER ON STATE
             // setup position  
@@ -252,7 +271,7 @@ mod PositionManager {
             // how much should send to the user 
 
             // 2. adapter calls @audit possible vul not follow CEI
-            let adapter = IEkuboAMMMarginTradingAdapterDispatcher{ contract_address: self.adapter.read() };
+            let adapter = IAdapterBaseDispatcher{ contract_address: self.adapter.read() };
             adapter.untrade(positionIndex); //  -> performs close position logic, like -> swaps, execute options or futures, etc
 
             // @INVARIANT close a position should always finish with non-traded-assets and only underlaying asset
@@ -324,8 +343,8 @@ mod PositionManager {
         
             // change removed position state on positions Vec 
             position_to_close.isOpen.write(false);
-            position_to_close.virtualIndexOnPositionsOpen.write(0);
-            position_to_close.virtualIndexOnPositionsOpenByUser.write(0);
+            // position_to_close.virtualIndexOnPositionsOpen.write(0);
+            // position_to_close.virtualIndexOnPositionsOpenByUser.write(0);
 
             // Get latest position on the view
             let latest_position_open_index = viewToUse.at(viewToUse.len()-1).read();
