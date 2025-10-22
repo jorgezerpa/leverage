@@ -90,6 +90,18 @@ use starknet::storage::{Vec, MutableVecTrait};
             }
             
         }
+
+        fn calculate_health(self: @ContractState, positionIndex:u64) -> u256 {
+            9999
+        }
+
+        fn is_liquidable(self: @ContractState, positionIndex:u64) -> bool {
+            if positionIndex%2==0 { true } else { false }
+        }
+
+        fn get_traded_asset_current_unit_price(self: @ContractState) -> u256 {
+            1
+        }
     }
 
 }

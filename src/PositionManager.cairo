@@ -5,7 +5,11 @@
 #[starknet::contract]
 mod PositionManager {
 
-    use starknet::{ContractAddress, get_caller_address};
+    use openzeppelin_token::erc20::extensions::erc4626::interface::IERC4626Dispatcher;
+use openzeppelin_token::erc20::interface::IERC20Dispatcher;
+use core::num::traits::Pow;
+    use leverage::Maths::Math;
+    use starknet::{ContractAddress, get_caller_address, get_contract_address};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
     use starknet::storage::{Map, StoragePathEntry};
     use starknet::storage::{Vec, MutableVecTrait};
@@ -21,11 +25,14 @@ mod PositionManager {
     use leverage::Interfaces::Pool::{IPoolDispatcher, IPoolDispatcherTrait};
 
     const POSITIONS_VECTOR_KEY: felt252 = 0;
+    const FEE_BPS: u8 = 10; // 0.1%
+    const BPS: u32 = 10000; // 0.1%
     
 
     #[storage]
     struct Storage {
         admin: ContractAddress, // Multisig wallet at the beggining, then maybe could be a DAO
+        fee_recipient: ContractAddress, // set to 0 address to disable protocol fees 
         adapter: ContractAddress,
         pool: ContractAddress, // lending pool -> Pool contract 
         poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
@@ -74,7 +81,7 @@ mod PositionManager {
 
         // @dev@todo implement calculation, this will be used by another functions too
         fn get_position_health(self: @ContractState, positionIndex:u64) -> u256 {
-            10_u256
+            IAdapterBaseDispatcher { contract_address: self.adapter.read() }.calculate_health(positionIndex)
         }
 
         fn get_positions(self: @ContractState, from:u64, to: u64) -> Array<Position> {
@@ -259,54 +266,122 @@ mod PositionManager {
         }
 
         fn close_position(ref self: ContractState, positionIndex: u64) {
-            //1. assertions 
+            // 0. basic vars
             let caller = get_caller_address();
             let position = self.positions.at(positionIndex); 
+            let adapter = IAdapterBaseDispatcher { contract_address: self.adapter.read() };
+            let pool:ERC4626ABIDispatcher = ERC4626ABIDispatcher { contract_address: self.pool.read()};
+            let underlaying_token = ERC20ABIDispatcher { contract_address: pool.asset() };
+            let marginState = self.userMargin.entry(caller).read();
+            
+            //1. assertions 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
-            // Check:
-            // health of position to check if can close it or needs to deposit collateral first 
-            // in case of loss -> how much should protocol keep from margin to cover losses (in case of loss)
-            // in case of profit -> how much should the procol take on fees 
-            // how much should send to the user 
+            assert!(!adapter.is_liquidable(positionIndex), "CAN NOT CLOSE A LIQUIDABLE POSITION"); // preventing front-running of liquidate function 
 
-            // 2. adapter calls @audit possible vul not follow CEI
+            // 2. Untrade @audit not follow CEI, but it is needed to untrade first to know the exact amount of tokens we have back -> So @todo@IMPORTANT implement reentrancy checks 
             let adapter = IAdapterBaseDispatcher{ contract_address: self.adapter.read() };
-            adapter.untrade(positionIndex); //  -> performs close position logic, like -> swaps, execute options or futures, etc
+            adapter.untrade(positionIndex); // @dev this should snapshot prev and post balance and work with difference -> preventing any kind of donation attack
+            // FROM NOW, this contract holds the underlaying tokens (margin + borrowed funds) that was backing the position
 
-            // @INVARIANT close a position should always finish with non-traded-assets and only underlaying asset
-            //  -> will transfer value to THIS so we can perform validations -> @dev todo should calculate a expected amount and return if it was not achieved? -> like a pre-calc and a slippage tolerance?
+            // 3. Evaluate P&L and act in consequence
+            // the next 3 variables are in underlaying terms 
+            let current_traded_asset_unit_price = adapter.get_traded_asset_current_unit_price(); 
+            let current_position_value = current_traded_asset_unit_price * position.total_traded_assets.read();
+            let initial_position_value = position.total_underlying_used.read();
+            
+            if(current_position_value > initial_position_value){ // in profit -> take fees and add profit to user margin register. 
+                let net_profit = current_position_value - initial_position_value;
+                let protocol_fee = Math::mulDiv(net_profit, FEE_BPS.into(), BPS.into(), 18); // @todo harcoded decimals, must fetch some how -> in this case, fetch the erc20 function
+                let trader_profit = net_profit - protocol_fee; // rest
 
-            // 3. make correspondant transfers  
-            // for trader, for pool and for protocol 
+                // protocol's profit is transfered to the pool  // @todo@important I am not taking LP profit
+                underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
+                
+                // user profit is deposited on its margin -> @todo@dev create a function that allows user to partially retire unused margin 
+                self.userMargin.entry(caller).write( 
+                    MarginState { 
+                        total: marginState.total + trader_profit, 
+                        used: marginState.used - position.total_underlying_used.read()/position.leverage.read().into() // substract used margin from used 
+                    }
+                );
+            } 
+            else { // in loss -> how much should take from margin to cover losses
+                // calculate total loss in underlying terms 
+                let net_loss = initial_position_value - current_position_value;
+                let protocol_fee = Math::mulDiv(net_loss, FEE_BPS.into(), BPS.into(), 18); // taking fee from loss -> this will be added to the amount to be deducted from user  
+ 
+                if(net_loss < position.total_underlying_used.read()/position.leverage.read().into()) { // if loss is less than margin
+                    self.userMargin.entry(caller).write(
+                        MarginState {
+                            total: marginState.total - (net_loss + protocol_fee), // @OSS report highlighter bug -> "a - b + c" != "a - (b+c)"
+                            used: marginState.used - position.total_underlying_used.read()/position.leverage.read().into()
+                        }
+                    );
+                    underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
+                }
+                else { // if loss is more or equal to margin
+                    // @notice this code should never be executed, because to keeper will liquidate the position before reaching a state where the net loss is more than the underlaying backing the loan (including fees)
+                    // BUT, there could be some weird edge cases (like keeper fails or extreme traded asset volatility) that causes the loss to be greater than the backup token amount
+                    // In such cases, the "if" code would fail due to underflow, which will cause a DoS on this function and possibly funds freezing
+                    // to handle that, the else block is taking all the position' collateral to minimiza AMAP the protocol losses NOT protocol fees are taken
+                    self.userMargin.entry(caller).write(
+                        MarginState {
+                            total: marginState.total - position.total_underlying_used.read()/position.leverage.read().into(),
+                            used: marginState.used - position.total_underlying_used.read()/position.leverage.read().into()
+                        }
+                    );
+                }
+            }
+
+            // 4. Transfer remaining underlaying back to the pool -> not invariant, but should always increase the pool balance compared with pre-position 
+            underlaying_token.transfer(self.pool.read(), underlaying_token.balanceOf(get_contract_address()));
 
             // 4. STATE UPDATES
             self._remove_position_from_view(View::positions, positionIndex); 
             self._remove_position_from_view(View::positionsByUser, positionIndex); 
 
-            // modify margin state 
-
             // emit event
         }
 
+        //  CLOSE POSITION SHOULD BE SIMILAR TO THIS -> but calculations change based on profit/loss state 
+        // @audit Not follow CEI -> refactor or implement pertinent security checks (reentrancy guards, etc)
         fn liquidate_position(ref self: ContractState, positionIndex: u64) {
-            // 1. assertions 
             let caller = get_caller_address();
             let position = self.positions.at(positionIndex); 
-            assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
-            assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
-            // check:
-            // health state -> can be liquidated?
-            // calculate -> how much back to the pool, how much as protocol fees
+            let adapter = IAdapterBaseDispatcher { contract_address: self.adapter.read() };
+            let pool:ERC4626ABIDispatcher = ERC4626ABIDispatcher { contract_address: self.pool.read()};
+            let underlaying_token = ERC20ABIDispatcher { contract_address: pool.asset() };
+            let marginState = self.userMargin.entry(position.owner.read()).read();
             
-            // make correspondant transfers -> follow CEI, do it bellow removes 
-            // 3. adapter.untrade(position)
+            // 1. assertions 
+            assert!(position.isOpen.read(), "CAN NOT LIQUIDATE A NOT OPEN POSITION");
+            assert!(adapter.is_liquidable(positionIndex), "POSITION NOT LIQUIDABLE");
+            
+            // 2. Untrade -> close position on 3rd party protocol and send underlaying to this contract
+            adapter.untrade(positionIndex); //  -> performs close position logic, like -> swaps, execute options or futures, etc -> tranfers amount back to this contract -> @dev@todo@audit should confirm/assert this
+            
+            // 3. calculate underlaying distribution
+            let currentBalance = underlaying_token.balance_of(get_contract_address()); // assuming contract should not hold any underlaying asset, and any direct transfer is considered a "donation" // @audit this could be dangerous? what if someone transfer a lot of tokens? via flashloan for example? could break something?
+            
+            // take protocol fee
+            if self.fee_recipient.read() != '0'_felt252.try_into().unwrap() {
+                let protocol_fee = (currentBalance*FEE_BPS.into())/BPS.into(); // @audit trucates if value is less/nearest to 10000
+                underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
+            }
+
+            // transfer remainder back to the pool as profit
+            underlaying_token.transfer(self.pool.read(), underlaying_token.balance_of(get_contract_address()));
 
             // STATE UPDATE
             self._remove_position_from_view(View::positions, positionIndex); 
             self._remove_position_from_view(View::positionsByUser, positionIndex); 
 
-            // modify margin state 
+            // modify margin state
+            let newTotal = marginState.total - (position.total_underlying_used.read()/position.leverage.read().into()); // substract all the margin that was used to back the position
+            let newUsed = marginState.total - (position.total_underlying_used.read()/position.leverage.read().into());
+
+            self.userMargin.entry(position.owner.read()).write(MarginState { total: newTotal, used: newUsed });            
 
             // emit event
         }
@@ -364,5 +439,40 @@ mod PositionManager {
 
     }
 
-
 }
+
+
+// function calculate_health(uint256 positionId) 
+//         public 
+//         view 
+//         returns (uint256 healthFactor) 
+//     {
+//         Position storage pos = positions[positionId];
+
+//         // 1. Fetch current price of the asset held in the position.
+//         // Assumes a successful price fetch. Error handling (e.g., `try/catch`) would be crucial in production.
+//         uint256 currentPrice = oracle.getAssetPrice(pos.assetAddress);
+
+//         // 2. Calculate the Current Position Value (Value of the asset held after the trade)
+//         // Value = Quantity * Price (scaled by an internal precision factor)
+//         // Note: A real implementation must handle price and quantity scaling carefully to prevent overflow/underflow.
+//         // Assuming assetQuantity and currentPrice are scaled by 1e18, we divide by 1e18 to get the scaled value.
+//         uint256 currentPositionValue = (pos.assetQuantity * currentPrice) / DENOMINATOR_PRECISION;
+
+//         // 3. Calculate the Total Debt Obligation
+//         // Total Debt = Principal Borrowed Amount + Accrued Interest + Any accrued Fees/Borrow Costs
+//         // For simplicity, we assume interestAccrued already includes any relevant fees.
+//         uint256 totalDebt = pos.borrowedAmount + pos.interestAccrued;
+
+//         // 4. Calculate the Margin Ratio (Health Factor)
+//         // Margin Ratio = (Current Position Value * DENOMINATOR_PRECISION) / Total Debt Obligation
+//         // We multiply the numerator by DENOMINATOR_PRECISION to maintain the precision of the result.
+//         // Prevents division by zero: if totalDebt is 0, the position is unleveraged and extremely healthy (return max uint).
+//         if (totalDebt == 0) {
+//             return type(uint256).max;
+//         }
+
+//         healthFactor = (currentPositionValue * DENOMINATOR_PRECISION) / totalDebt;
+
+//         return healthFactor;
+//     }
