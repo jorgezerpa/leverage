@@ -6,8 +6,8 @@
 mod PositionManager {
 
     use openzeppelin_token::erc20::extensions::erc4626::interface::IERC4626Dispatcher;
-use openzeppelin_token::erc20::interface::IERC20Dispatcher;
-use core::num::traits::Pow;
+    use openzeppelin_token::erc20::interface::IERC20Dispatcher;
+    use core::num::traits::Pow;
     use leverage::Maths::Math;
     use starknet::{ContractAddress, get_caller_address, get_contract_address};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
@@ -24,6 +24,7 @@ use core::num::traits::Pow;
     use leverage::Interfaces::Adapters::AdapterBase::{IAdapterBaseDispatcher,IAdapterBaseDispatcherTrait};
     use leverage::Interfaces::Pool::{IPoolDispatcher, IPoolDispatcherTrait};
 
+    const ADDRESS_ZERO: ContractAddress = 0x0.try_into().unwrap(); 
     const POSITIONS_VECTOR_KEY: felt252 = 0;
     const FEE_BPS: u8 = 10; // 0.1%
     const PROTOCOL_FEE_BPS: u8 = 10; // 0.1% this will be taken from the X% of total fees 
@@ -38,6 +39,7 @@ use core::num::traits::Pow;
         pool: ContractAddress, // lending pool -> Pool contract 
         poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
         userMargin: Map<ContractAddress, MarginState>, // deposited and used margin for each user
+        positionsCount: u64,
         positions: Vec<Position>, // length ONLY INCREASES 
         positionsOpen: Map<felt252,Vec<u64>>, // the map has a single key -> POSITIONS_VECTOR_KEY, this is for return type matching during match sentences btw position and positions by user (one is a direct vector, the other is a pointer to the vector)
         positionsClosed: Map<felt252,Vec<u64>>,  
@@ -61,7 +63,7 @@ use core::num::traits::Pow;
             isOpen: false,
             virtualIndexOnPositionsOpen: 0, 
             virtualIndexOnPositionsOpenByUser: 0,
-            owner:'0'_felt252.try_into().unwrap(), 
+            owner:ADDRESS_ZERO, 
             leverage: 0,
             total_underlying_used: 0,  
             total_traded_assets: 0,  
@@ -70,12 +72,18 @@ use core::num::traits::Pow;
         };
         
         self.positions.push(position); 
+        self.positionsCount.write(1);
     }
 
 
     #[abi(embed_v0)]
     impl PositionManagerImpl of IPositionManager<ContractState> {
         /// GETTERS
+        
+        fn get_positions_count(self: @ContractState) -> u64 {
+            self.positionsCount.read()
+        }
+
         fn get_user_margin_state(self: @ContractState, address: ContractAddress) -> MarginState {
             self.userMargin.entry(address).read()
         }
@@ -252,11 +260,11 @@ use core::num::traits::Pow;
             pool.transfer_assets_to_trade(total_underlying_to_use, self.adapter.read());
             
             let adapter = IAdapterBaseDispatcher{ contract_address: self.adapter.read() };
-           
             let (traded_asset_price, total_traded_asset, trade_data) = adapter.trade(total_underlying_to_use, direction, data); // This should -> swap tokens on ekubo, return the price of the individual traded asset value, and the total traded asset buyed 
 
             // 3. REGISTER ON STATE
             // setup position  
+            let index_of_new_position = self.positions.len();
             let position:Position = Position {
                 isOpen: true,
                 virtualIndexOnPositionsOpen: self.positionsOpen.entry(POSITIONS_VECTOR_KEY).len(), // len()==currentIndex+1 (indexes from 0)
@@ -275,7 +283,6 @@ use core::num::traits::Pow;
             // register on state 
             self.userMargin.entry(caller).write(new_user_margin); // register user margin
             // 
-            let index_of_new_position = self.positions.len();
             self.positions.push(position); 
             self.positionsOpen.entry(POSITIONS_VECTOR_KEY).push(index_of_new_position);
             self.positionsOpenByUser.entry(caller).push(index_of_new_position);
@@ -284,6 +291,8 @@ use core::num::traits::Pow;
             for item in trade_data {
                 adapterTradeDataVec.push(item);
             }
+
+            self.positionsCount.write( self.positionsCount.read() + 1 );
 
             // emit event 
         }
@@ -309,8 +318,8 @@ use core::num::traits::Pow;
 
             // 3. Evaluate P&L and act in consequence
             // the next 3 variables are in underlaying terms 
-            let current_traded_asset_unit_price = adapter.get_traded_asset_current_unit_price(); 
-            let current_position_value = current_traded_asset_unit_price * position.total_traded_assets.read();
+            let current_position_value = adapter.get_current_position_value(positionIndex);
+            
             let initial_position_value = position.total_underlying_used.read();
             
             if(current_position_value > initial_position_value){ // in profit -> take fees and add profit to user margin register. 
@@ -321,7 +330,7 @@ use core::num::traits::Pow;
                 // X percent of fees, the other goes to the pool 
                 let protocol_fee = Math::mulDiv(fees, PROTOCOL_FEE_BPS.into(), BPS.into(), 18);
 
-                if self.fee_recipient.read() != '0'_felt252.try_into().unwrap() {
+                if self.fee_recipient.read() != ADDRESS_ZERO {
                     underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
                 }
                 
@@ -347,7 +356,7 @@ use core::num::traits::Pow;
                     );
                     let protocol_fee = Math::mulDiv(fees, PROTOCOL_FEE_BPS.into(), BPS.into(), 18);
 
-                    if self.fee_recipient.read() != '0'_felt252.try_into().unwrap() {
+                    if self.fee_recipient.read() != ADDRESS_ZERO {
                         underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
                     }
                 }
@@ -378,7 +387,6 @@ use core::num::traits::Pow;
         //  CLOSE POSITION SHOULD BE SIMILAR TO THIS -> but calculations change based on profit/loss state 
         // @audit Not follow CEI -> refactor or implement pertinent security checks (reentrancy guards, etc)
         fn liquidate_position(ref self: ContractState, positionIndex: u64) {
-            let caller = get_caller_address();
             let position = self.positions.at(positionIndex); 
             let adapter = IAdapterBaseDispatcher { contract_address: self.adapter.read() };
             let pool:ERC4626ABIDispatcher = ERC4626ABIDispatcher { contract_address: self.pool.read()};
@@ -396,8 +404,8 @@ use core::num::traits::Pow;
             let currentBalance = underlaying_token.balance_of(get_contract_address()); // assuming contract should not hold any underlaying asset, and any direct transfer is considered a "donation" // @audit this could be dangerous? what if someone transfer a lot of tokens? via flashloan for example? could break something?
             
             // take protocol fee
-            if self.fee_recipient.read() != '0'_felt252.try_into().unwrap() {
-                let protocol_fee = Math::mulDiv(currentBalance, FEE_BPS.into(), BPS.into(), 18); // in liquidations protocol takes more fees 
+            if self.fee_recipient.read() != ADDRESS_ZERO {
+                let protocol_fee = Math::mulDiv(currentBalance, FEE_BPS.into(), BPS.into(), 18); // in liquidations protocol takes more % of fees than in close, because all the other value will be directly transfered to the pool as profit for LPs
                 underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
             }
 
@@ -410,7 +418,7 @@ use core::num::traits::Pow;
 
             // modify margin state
             let newTotal = marginState.total - (position.total_underlying_used.read()/position.leverage.read().into()); // substract all the margin that was used to back the position
-            let newUsed = marginState.total - (position.total_underlying_used.read()/position.leverage.read().into());
+            let newUsed = marginState.used - (position.total_underlying_used.read()/position.leverage.read().into());
 
             self.userMargin.entry(position.owner.read()).write(MarginState { total: newTotal, used: newUsed });            
 
@@ -435,16 +443,13 @@ use core::num::traits::Pow;
     impl InternalFunctions of InternalFunctionsTrait {
         
         fn _remove_position_from_view(ref self: ContractState, view:View,  positionIndex:u64) {
-            // basic variables
-            let caller: ContractAddress = get_caller_address();
-
             // get position to be closed 
             let mut position_to_close = self.positions.at(positionIndex);
 
             // search for the position on the specified view and get data needed to remove such position
             let (remove_index, viewToUse, viewToUseClosed) = match view {
                 View::positions => (position_to_close.virtualIndexOnPositionsOpen.read(),self.positionsOpen.entry(POSITIONS_VECTOR_KEY),self.positionsClosed.entry(POSITIONS_VECTOR_KEY)), 
-                View::positionsByUser => (position_to_close.virtualIndexOnPositionsOpenByUser.read(),self.positionsOpenByUser.entry(caller),self.positionsClosedByUser.entry(caller)),
+                View::positionsByUser => (position_to_close.virtualIndexOnPositionsOpenByUser.read(),self.positionsOpenByUser.entry(position_to_close.owner.read()),self.positionsClosedByUser.entry(position_to_close.owner.read())),
             };
         
             // change removed position state on positions Vec 

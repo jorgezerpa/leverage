@@ -10,4 +10,5 @@ pub trait IAdapterBase<TContractState> {
     fn is_liquidable(self: @TContractState, positionIndex:u64) -> bool;
     // 
     fn get_traded_asset_current_unit_price(self: @TContractState) -> u256; 
+    fn get_current_position_value(self: @TContractState, positionIndex: u64) -> u256;
 }

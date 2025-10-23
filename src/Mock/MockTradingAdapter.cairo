@@ -1,18 +1,31 @@
 use leverage::Interfaces::Shared::{Direction};
 use leverage::Interfaces::Adapters::AdapterBase::IAdapterBase;
 
+#[starknet::interface]
+pub trait ITestingHelper<TContractState> {
+    fn set_position_mock_value(ref self: TContractState, position: u64, value: u256);
+}
+
 #[starknet::contract]
 mod MockTradingAdapter {
     use starknet::{ContractAddress, get_caller_address};
-use starknet::storage::{Vec, MutableVecTrait};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
+    use starknet::storage::{Map, StoragePathEntry};
+    use starknet::storage::{Vec, MutableVecTrait};
     use super::IAdapterBase;
     use leverage::Interfaces::Shared::{Direction};
+    use leverage::Interfaces::PositionManager::{IPositionManagerDispatcher, IPositionManagerDispatcherTrait};
+    use openzeppelin_token::erc20::{ERC20ABIDispatcher, ERC20ABIDispatcherTrait};
+    use openzeppelin_token::erc20::extensions::erc4626::interface::{ERC4626ABIDispatcher, ERC4626ABIDispatcherTrait};
 
     #[storage]
     struct Storage {
         positionManager: ContractAddress,
         tradeDataTypes: Vec<felt252>, // allowed types -> 'integer', 'string', 'address' -> returned data types 
+        // 
+        // FOR TEST PURPOSES register the position underlaying used when opens it (calls trade)
+        // If you need such position to be liquidable, in loss or with profit, call the helper function "set_position_mock_value" to set a new value
+        positionsMockValue: Map<u64, u256> 
     }
 
     #[constructor]
@@ -20,35 +33,35 @@ use starknet::storage::{Vec, MutableVecTrait};
         self.positionManager.write(positionManager);
     }
 
+
+    #[abi(embed_v0)]
+    impl testingHelper of super::ITestingHelper<ContractState> {
+        fn set_position_mock_value(ref self: ContractState, position: u64, value: u256) {
+            self.positionsMockValue.entry(position).write(value);
+        }
+    }
+
     #[abi(embed_v0)]
     impl EkuboAMMMarginTradingAdapter of IAdapterBase<ContractState> {
         fn trade(ref self: ContractState, amount: u256, direction: Direction, data: Array<felt252>) -> (u256, u256, Array<felt252>){
             assert!(get_caller_address() == self.positionManager.read(), "ONLY POSITION MANAGER");
-                // this is custom logic for ekubo adapter 
-                // match direction {
-                //     Direction::bullish => {
-                //         // If direction is bullish, perform a swap "underlying->counter"
-                //         traded_asset_price = 1000000_u256; // simulate result for unit counter price calculation -> this is used to store the Position on the correspondant price range 
-                //         total_traded_asset = 10000000_u256; // simulate 10 counter tokens was buyed
-                //     },
-                //     Direction::bearish => {
-                //         // IF direction is bearish, then do not perform the swap, just fetch the price and set apart the correspondant underlying to rebuy the asset when close the position
-                //         // (this is equivalent to swap the counter for the underlying to go short)
-                //         // @dev when close the position, we will buy the counter token and give it back to the trader, so -> the part the protocol keeps should be swaped to underlying 
-                //         // @dev should we still make a swap? because the user should deposit or directly transfer the counter they want to sell. OR we just take the equivalent from the deposited margin in underlying? so if they wants to get rid of his counter, they have to swap it and then deposit it here? if choose this last option, we should abstract that swap logic directly -> like give the options "use margin" or "deposit counter" -> this could be made on the front? or it's better to embed on this function as receive a paramenter to choose? or create another specific function follwing DRY principle?
-                //         traded_asset_price = 1000000_u256;  
-                //         total_traded_asset = 10000000_u256; 
-                //     }
-                // }
+            let positionManager = IPositionManagerDispatcher { contract_address: self.positionManager.read() };
+            self.positionsMockValue.entry(positionManager.get_positions_count()).write(amount);
+            
             let mut tradeData:Array<felt252> = ArrayTrait::new(); // any useful data that the 3rd party protocol returns 
             tradeData.append(1); // first element should always be the length of the data
             // RETURN MOCK VALUES TO EVALUATE ON TESTS -> this values should be correctly on Position  
             (0,0, tradeData) // traded_asset_price, total_traded_asset, trade_data
         } 
-
+        
         fn untrade(ref self: ContractState, position_index: u64) {
             assert!(get_caller_address() == self.positionManager.read(), "ONLY POSITION MANAGER");
-            
+            let positionManager = IPositionManagerDispatcher { contract_address: self.positionManager.read() };
+            let pool = ERC4626ABIDispatcher { contract_address: positionManager.get_pool() };
+            let token = ERC20ABIDispatcher { contract_address: pool.asset() };
+
+            token.transfer(positionManager.contract_address, self.positionsMockValue.entry(position_index).read());
+            self.positionsMockValue.entry(position_index).read();
         }
 
         // for each adapter, there will be a table in docs that relate a number to a specific type, so trade data can be decoded by looping on each felt and using if sentences to decode each value
@@ -96,11 +109,19 @@ use starknet::storage::{Vec, MutableVecTrait};
         }
 
         fn is_liquidable(self: @ContractState, positionIndex:u64) -> bool {
-            if positionIndex%2==0 { true } else { false }
+            let positionManager = IPositionManagerDispatcher { contract_address: self.positionManager.read() };
+            let positions = positionManager.get_positions(positionIndex,positionIndex+1);
+            let position = *positions.at(0);
+
+            position.total_underlying_used > self.positionsMockValue.entry(positionIndex).read()
         }
 
         fn get_traded_asset_current_unit_price(self: @ContractState) -> u256 {
             1
+        }
+
+        fn get_current_position_value(self: @ContractState, positionIndex: u64) -> u256 {
+            self.positionsMockValue.entry(positionIndex).read()
         }
     }
 

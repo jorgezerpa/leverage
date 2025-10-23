@@ -17,6 +17,7 @@ use leverage::Interfaces::Shared::{Direction, MarginState, Position};
 use leverage::Interfaces::PositionManager::{IPositionManagerDispatcher, IPositionManagerDispatcherTrait};
 use leverage::Interfaces::Pool::{IPoolDispatcher, IPoolDispatcherTrait};
 use leverage::Interfaces::Adapters::AdapterBase::{IAdapterBaseDispatcher, IAdapterBaseDispatcherTrait};
+use leverage::Mock::MockTradingAdapter::{ITestingHelperDispatcher, ITestingHelperDispatcherTrait};
 //
 use openzeppelin_token::erc20::{ERC20ABIDispatcher, ERC20ABIDispatcherTrait};
 
@@ -75,14 +76,17 @@ fn setup() -> (IPositionManagerDispatcher, IPoolDispatcher, IAdapterBaseDispatch
     positionManager.set_adapter(adapter.contract_address);
     stop_cheat_caller_address(positionManager.contract_address);
 
-    // giving tokens to users
+    // mocking balances
     let cheated_token = Token::Custom(
         CustomToken {
             contract_address: token.contract_address,
             balances_variable_selector: selector!("ERC20_balances")
         }
     );
+    // giving tokens to users
     set_balance(USER_1(), 100*WAD(), cheated_token);
+    // giving tokens to adapter -> will need them for the untrade function to emulate transfer back the value of the position 
+    set_balance(adapter.contract_address, 1000*WAD(), cheated_token);
 
     (
         positionManager,
@@ -110,7 +114,7 @@ fn test_deploy() {
     assert(!position.isOpen, 'Position should be closed');
     assert(position.virtualIndexOnPositionsOpen==0, 'should be 0');
     assert(position.virtualIndexOnPositionsOpenByUser==0, 'should be 0');
-    assert(position.owner=='0'_felt252.try_into().unwrap(), 'should be 0');
+    assert(position.owner==0x0.try_into().unwrap(), 'should be 0');
     assert(position.leverage==0, 'should be 0');
     assert(position.total_underlying_used==0, 'should be 0');
     assert(position.total_traded_assets==0, 'should be 0');
@@ -255,24 +259,46 @@ fn test_should_remove_position_from_open_after_remove() {
 
 #[test]
 fn test_liquidate_position() {
-    // let (positionManager, _, _, token) = setup();
-    // deposit_margin(positionManager, token, USER_1(), 10*WAD());
-    // // Opening position 
-    // let margin_amount_to_use:u256 = 1*WAD();
-    // let leverage: u8 = 2;
-    // let direction = Direction::bullish; 
-    // let data:Array<felt252> = ArrayTrait::new();
-    // start_cheat_caller_address(positionManager.contract_address, USER_1());
-    // positionManager.open_position(margin_amount_to_use, leverage, direction, data);
-    // stop_cheat_caller_address(positionManager.contract_address);
+    let (positionManager, _, adapter, token) = setup();
+    deposit_margin(positionManager, token, USER_1(), 10*WAD());
     
-    // // getting position index
-    // let userOpenPositions = positionManager.get_indexes_of_positions_open_by_user(USER_1(), 0, 1);
-    // let openPositionIndex = *userOpenPositions.at(0);
+    // Opening position 
+    let margin_amount_to_use:u256 = 1*WAD();
+    let leverage: u8 = 2;
+    let direction = Direction::bullish; 
+    let data:Array<felt252> = ArrayTrait::new();
+    start_cheat_caller_address(positionManager.contract_address, USER_1());
+    positionManager.open_position(margin_amount_to_use, leverage, direction, data);
+    stop_cheat_caller_address(positionManager.contract_address);
     
-    // // LIQUIDATE
-    // positionManager.close_position(openPositionIndex);
+    // getting position index
+    let userOpenPositions = positionManager.get_indexes_of_positions_open_by_user(USER_1(), 0, 1);
+    let openPositionIndex = *userOpenPositions.at(0);
 
+    // mock set position on liquidation state (read mock adapter comments on storage to get more context) 
+    let testingHelper = ITestingHelperDispatcher { contract_address: positionManager.get_adapter() };
+    testingHelper.set_position_mock_value(openPositionIndex, WAD());
+    adapter.is_liquidable(openPositionIndex);
+
+    // LIQUIDATE
+    
+    positionManager.liquidate_position(openPositionIndex);
+
+    // checking state
+    // let userClosedPositions = positionManager.get_indexes_of_positions_closed_by_user(USER_1(), 0, 1);
+
+    // let closedPositionIndex = *userClosedPositions.at(0);
+    // let closedPosition = *positionManager.get_positions_closed_by_user(USER_1(), 0, 1).at(0);
+
+    // assert(userClosedPositions.len()==1, 'not added to closed positions');
+    // assert(openPositionIndex==closedPositionIndex, 'incorrect position closed');
+    // assert(!closedPosition.isOpen, 'position not open');
+    // assert(closedPosition.owner==USER_1(), 'incorrect owner');
+    // assert(closedPosition.leverage==leverage, 'incorrect leverage');
+    // assert(closedPosition.total_underlying_used==margin_amount_to_use*leverage.into(), 'incorrect underl. used');
+    // assert(closedPosition.total_traded_assets==0, 'incorrect traded'); // the '0' is harcoded on the mock adapter, just to confirm that the value is being correctly setted, with a reeal adapter we should implement a different logic
+    // assert(closedPosition.openPrice==0, 'should be 0'); // the '0' is harcoded on the mock adapter, just to confirm that the value is being correctly setted, with a reeal adapter we should implement a different logic
+    // assert(closedPosition.direction==direction, 'should be bullish');
 }
 
 #[test]

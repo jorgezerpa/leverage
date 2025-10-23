@@ -15,6 +15,7 @@ pub trait IPositionManager<TContractState> {
     fn liquidate_position(ref self: TContractState, positionIndex: u64); // in Positions vector  
 
     // // getters 
+    fn get_positions_count(self: @TContractState) -> u64;
     fn get_user_margin_state(self: @TContractState, address: ContractAddress) -> MarginState; // returns the totalDeposited margin 
     fn get_position_health(self: @TContractState, positionIndex:u64) -> u256;
     //
