@@ -194,6 +194,8 @@ use core::num::traits::Pow;
 
         ////
         fn deposit_margin(ref self: ContractState, amount: u256) {
+            // @dev@todo add min amount check 
+
             let caller = get_caller_address();
             // register depositor
             let newMarginState:MarginState = MarginState { total: amount, used: 0 };
@@ -206,7 +208,27 @@ use core::num::traits::Pow;
             
             assert!(success, "FAILED TRANSFER_FROM");
             // assert!(new balance - prev balance is equal to amount)
-            
+        }
+
+        fn withdraw_margin(ref self: ContractState, amount: u256) {
+            let caller = get_caller_address();
+            let marginState = self.userMargin.entry(caller).read();
+            let availableToWithdraw = marginState.total - marginState.used; // @INVARIANT used should never be more than totoal  
+
+            assert!(availableToWithdraw>=amount, "Exceed available margin to withdraw");
+
+            self.userMargin.entry(caller).write(MarginState { used: marginState.used, total: marginState.total - amount }); // safe operation 
+
+            let pool:ERC4626ABIDispatcher = ERC4626ABIDispatcher { contract_address: self.pool.read()};
+            let token = ERC20ABIDispatcher { contract_address: pool.asset() };
+
+            let pool = IPoolDispatcher{contract_address: self.pool.read()};
+            pool.transfer_assets_to_trade(amount, get_contract_address());
+
+            token.transfer(caller, amount);
+
+            // emit event 
+
         }
         
 

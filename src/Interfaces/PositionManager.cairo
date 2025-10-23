@@ -9,6 +9,7 @@ use leverage::Interfaces::Shared::{
 pub trait IPositionManager<TContractState> {
     // for traders
     fn deposit_margin(ref self: TContractState, amount: u256);
+    fn withdraw_margin(ref self: TContractState, amount: u256);
     fn open_position(ref self: TContractState, margin_amount_to_use: u256, leverage: u8, direction: Direction, data: Array<felt252> ); 
     fn close_position(ref self: TContractState, positionIndex: u64); // in Positions vector  
     fn liquidate_position(ref self: TContractState, positionIndex: u64); // in Positions vector  

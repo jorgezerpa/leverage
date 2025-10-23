@@ -138,6 +138,17 @@ fn test_deposit_margin() {
 }
 
 #[test]
+fn test_withdraw_margin() {
+    let (positionManager, _, _, token) = setup();
+
+    deposit_margin(positionManager, token, USER_1(), 10*WAD());
+
+    start_cheat_caller_address(positionManager.contract_address, USER_1());
+    positionManager.withdraw_margin(10*WAD());
+    stop_cheat_caller_address(positionManager.contract_address);
+}
+
+#[test]
 fn test_open_position() {
     let (positionManager, _, _, token) = setup();
 
