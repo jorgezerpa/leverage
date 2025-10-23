@@ -26,6 +26,7 @@ use core::num::traits::Pow;
 
     const POSITIONS_VECTOR_KEY: felt252 = 0;
     const FEE_BPS: u8 = 10; // 0.1%
+    const PROTOCOL_FEE_BPS: u8 = 10; // 0.1% this will be taken from the X% of total fees 
     const BPS: u32 = 10000; // 0.1%
     
 
@@ -299,7 +300,7 @@ use core::num::traits::Pow;
             //1. assertions 
             assert!(position.owner.read()==caller, "ONLY OWNER CAN CLOSE POSITION");
             assert!(position.isOpen.read(), "CAN NOT CLOSE A NOT OPEN POSITION");
-            assert!(!adapter.is_liquidable(positionIndex), "CAN NOT CLOSE A LIQUIDABLE POSITION"); // preventing front-running of liquidate function 
+            assert!(!adapter.is_liquidable(positionIndex), "CAN NOT CLOSE A LIQUIDABLE POSITION"); // @dev this is preventing front-running of liquidate function 
 
             // 2. Untrade @audit not follow CEI, but it is needed to untrade first to know the exact amount of tokens we have back -> So @todo@IMPORTANT implement reentrancy checks 
             let adapter = IAdapterBaseDispatcher{ contract_address: self.adapter.read() };
@@ -314,11 +315,15 @@ use core::num::traits::Pow;
             
             if(current_position_value > initial_position_value){ // in profit -> take fees and add profit to user margin register. 
                 let net_profit = current_position_value - initial_position_value;
-                let protocol_fee = Math::mulDiv(net_profit, FEE_BPS.into(), BPS.into(), 18); // @todo harcoded decimals, must fetch some how -> in this case, fetch the erc20 function
-                let trader_profit = net_profit - protocol_fee; // rest
+                let fees = Math::mulDiv(net_profit, FEE_BPS.into(), BPS.into(), 18); // @todo harcoded decimals, must fetch some how -> in this case, fetch the erc20 function
+                let trader_profit = net_profit - fees; // rest
 
-                // protocol's profit is transfered to the pool  // @todo@important I am not taking LP profit
-                underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
+                // X percent of fees, the other goes to the pool 
+                let protocol_fee = Math::mulDiv(fees, PROTOCOL_FEE_BPS.into(), BPS.into(), 18);
+
+                if self.fee_recipient.read() != '0'_felt252.try_into().unwrap() {
+                    underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
+                }
                 
                 // user profit is deposited on its margin -> @todo@dev create a function that allows user to partially retire unused margin 
                 self.userMargin.entry(caller).write( 
@@ -331,16 +336,20 @@ use core::num::traits::Pow;
             else { // in loss -> how much should take from margin to cover losses
                 // calculate total loss in underlying terms 
                 let net_loss = initial_position_value - current_position_value;
-                let protocol_fee = Math::mulDiv(net_loss, FEE_BPS.into(), BPS.into(), 18); // taking fee from loss -> this will be added to the amount to be deducted from user  
+                let fees = Math::mulDiv(net_loss, FEE_BPS.into(), BPS.into(), 18); // taking fee from loss -> this will be added to the amount to be deducted from user  
  
                 if(net_loss < position.total_underlying_used.read()/position.leverage.read().into()) { // if loss is less than margin
                     self.userMargin.entry(caller).write(
                         MarginState {
-                            total: marginState.total - (net_loss + protocol_fee), // @OSS report highlighter bug -> "a - b + c" != "a - (b+c)"
+                            total: marginState.total - (net_loss + fees), // @OSS report highlighter bug -> "a - b + c" != "a - (b+c)"
                             used: marginState.used - position.total_underlying_used.read()/position.leverage.read().into()
                         }
                     );
-                    underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
+                    let protocol_fee = Math::mulDiv(fees, PROTOCOL_FEE_BPS.into(), BPS.into(), 18);
+
+                    if self.fee_recipient.read() != '0'_felt252.try_into().unwrap() {
+                        underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
+                    }
                 }
                 else { // if loss is more or equal to margin
                     // @notice this code should never be executed, because to keeper will liquidate the position before reaching a state where the net loss is more than the underlaying backing the loan (including fees)
@@ -388,7 +397,7 @@ use core::num::traits::Pow;
             
             // take protocol fee
             if self.fee_recipient.read() != '0'_felt252.try_into().unwrap() {
-                let protocol_fee = (currentBalance*FEE_BPS.into())/BPS.into(); // @audit trucates if value is less/nearest to 10000
+                let protocol_fee = Math::mulDiv(currentBalance, FEE_BPS.into(), BPS.into(), 18); // in liquidations protocol takes more fees 
                 underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
             }
 
