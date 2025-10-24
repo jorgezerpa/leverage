@@ -29,9 +29,6 @@ mod PositionManager {
     const FEE_BPS: u8 = 10; // 0.1%
     const PROTOCOL_FEE_BPS: u8 = 10; // 0.1% this will be taken from the X% of total fees 
     const BPS: u32 = 10000; // 0.1%
-    // BOUNDARIES // @TODO should be a storage variable that could be modified by an admin 
-
-    
 
     #[storage]
     struct Storage {
@@ -257,7 +254,7 @@ mod PositionManager {
             assert!(margin_amount_to_use>=self.config.MIN_MARGIN_AMOUNT_TO_OPEN_POSITION.read(), "INSUFFICIENT MARGIN AMOUNT"); 
             assert!(available_margin >= margin_amount_to_use, "USER HAS NOT ENOUGH MARGIN DEPOSITED"); // the user has enough margin 
             assert!(pool.total_assets()>=total_underlying_to_use, "NOT ENOUGH LIQUIDITY ON THE POOL"); // the available liquidity on the pool is enough to cover the leverage requierement
-            
+            // @todo implement logic to accept only valid leverage multipliers
 
             // 2. trade with adapter @audit possible vul not follow CEI
             let pool = IPoolDispatcher{contract_address: self.pool.read()};
@@ -318,7 +315,7 @@ mod PositionManager {
 
             // 2. Untrade @audit not follow CEI, but it is needed to untrade first to know the exact amount of tokens we have back -> So @todo@IMPORTANT implement reentrancy checks 
             let adapter = IAdapterBaseDispatcher{ contract_address: self.adapter.read() };
-            adapter.untrade(positionIndex); // @dev this should snapshot prev and post balance and work with difference -> preventing any kind of donation attack
+            adapter.untrade(positionIndex); // @audit to evaluate -> this should snapshot prev and post balance and work with difference -> preventing any kind of donation attack
             // FROM NOW, this contract holds the underlaying tokens (margin + borrowed funds) that was backing the position
 
             // 3. Evaluate P&L and act in consequence
@@ -329,7 +326,7 @@ mod PositionManager {
             
             if(current_position_value > initial_position_value){ // in profit -> take fees and add profit to user margin register. 
                 let net_profit = current_position_value - initial_position_value;
-                let fees = Math::mulDiv(net_profit, FEE_BPS.into(), BPS.into(), underlaying_token.decimals().into()); // @todo harcoded decimals, must fetch some how -> in this case, fetch the erc20 function
+                let fees = Math::mulDiv(net_profit, FEE_BPS.into(), BPS.into(), underlaying_token.decimals().into()); 
                 let trader_profit = net_profit - fees; // rest
 
                 // X percent of fees, the other goes to the pool 
@@ -339,10 +336,11 @@ mod PositionManager {
                     underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
                 }
                 
-                // user profit is deposited on its margin -> @todo@dev create a function that allows user to partially retire unused margin 
+                // user profit is deposited on their margin  
                 self.userMargin.entry(caller).write( 
                     MarginState { 
                         total: marginState.total + trader_profit, 
+                        // @audit If a margin call occurs, now total_underlying_used%leverage!=0 -> check if this could lead to signification rounding errors. however, dust losses are acceptable -> pd: this operation is perfomend in multiple parts of the code, look for ".leverage" to find them 
                         used: marginState.used - position.total_underlying_used.read()/position.leverage.read().into() // substract used margin from used 
                     }
                 );
@@ -403,7 +401,7 @@ mod PositionManager {
             assert!(adapter.is_liquidable(positionIndex), "POSITION NOT LIQUIDABLE");
             
             // 2. Untrade -> close position on 3rd party protocol and send underlaying to this contract
-            adapter.untrade(positionIndex); //  -> performs close position logic, like -> swaps, execute options or futures, etc -> tranfers amount back to this contract -> @dev@todo@audit should confirm/assert this
+            adapter.untrade(positionIndex); //  -> performs close position logic, like -> swaps, execute options or futures, etc -> tranfers amount back to this contract -> @dev@todo@audit should confirm/assert this by snapshot prev and new balance of underlaying of this
             
             // 3. calculate underlaying distribution
             let currentBalance = underlaying_token.balance_of(get_contract_address()); // assuming contract should not hold any underlaying asset, and any direct transfer is considered a "donation" // @audit this could be dangerous? what if someone transfer a lot of tokens? via flashloan for example? could break something?
