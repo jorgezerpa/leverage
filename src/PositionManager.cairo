@@ -324,11 +324,11 @@ mod PositionManager {
             
             if(current_position_value > initial_position_value){ // in profit -> take fees and add profit to user margin register. 
                 let net_profit = current_position_value - initial_position_value;
-                let fees = Math::mulDiv(net_profit, FEE_BPS.into(), BPS.into(), 18); // @todo harcoded decimals, must fetch some how -> in this case, fetch the erc20 function
+                let fees = Math::mulDiv(net_profit, FEE_BPS.into(), BPS.into(), underlaying_token.decimals().into()); // @todo harcoded decimals, must fetch some how -> in this case, fetch the erc20 function
                 let trader_profit = net_profit - fees; // rest
 
                 // X percent of fees, the other goes to the pool 
-                let protocol_fee = Math::mulDiv(fees, PROTOCOL_FEE_BPS.into(), BPS.into(), 18);
+                let protocol_fee = Math::mulDiv(fees, PROTOCOL_FEE_BPS.into(), BPS.into(), underlaying_token.decimals().into());
 
                 if self.fee_recipient.read() != ADDRESS_ZERO {
                     underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
@@ -345,7 +345,7 @@ mod PositionManager {
             else { // in loss -> how much should take from margin to cover losses
                 // calculate total loss in underlying terms 
                 let net_loss = initial_position_value - current_position_value;
-                let fees = Math::mulDiv(net_loss, FEE_BPS.into(), BPS.into(), 18); // taking fee from loss -> this will be added to the amount to be deducted from user  
+                let fees = Math::mulDiv(net_loss, FEE_BPS.into(), BPS.into(), underlaying_token.decimals().into()); // taking fee from loss -> this will be added to the amount to be deducted from user  
  
                 if(net_loss < position.total_underlying_used.read()/position.leverage.read().into()) { // if loss is less than margin
                     self.userMargin.entry(caller).write(
@@ -354,7 +354,7 @@ mod PositionManager {
                             used: marginState.used - position.total_underlying_used.read()/position.leverage.read().into()
                         }
                     );
-                    let protocol_fee = Math::mulDiv(fees, PROTOCOL_FEE_BPS.into(), BPS.into(), 18);
+                    let protocol_fee = Math::mulDiv(fees, PROTOCOL_FEE_BPS.into(), BPS.into(), underlaying_token.decimals().into());
 
                     if self.fee_recipient.read() != ADDRESS_ZERO {
                         underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
@@ -405,7 +405,7 @@ mod PositionManager {
             
             // take protocol fee
             if self.fee_recipient.read() != ADDRESS_ZERO {
-                let protocol_fee = Math::mulDiv(currentBalance, FEE_BPS.into(), BPS.into(), 18); // in liquidations protocol takes more % of fees than in close, because all the other value will be directly transfered to the pool as profit for LPs
+                let protocol_fee = Math::mulDiv(currentBalance, FEE_BPS.into(), BPS.into(), underlaying_token.decimals().into()); // in liquidations protocol takes more % of fees than in close, because all the other value will be directly transfered to the pool as profit for LPs
                 underlaying_token.transfer(self.fee_recipient.read(), protocol_fee);
             }
 
