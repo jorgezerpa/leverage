@@ -8,6 +8,7 @@ pub struct MarginState {
 
 #[derive(Drop, Serde, Copy, starknet::Store)]
 pub struct Position {
+    pub deadline: u64,
     pub isOpen: bool, // false when is closed or liquidated 
     pub virtualIndexOnPositionsOpen: u64, // IT SHOULD ADD ON OF THIS FOR EACH POSITION VIEW, because index will be different or (maybe) make views mappings so I stora position on the same "index" key? will this overite other positions?
     pub virtualIndexOnPositionsOpenByUser:u64,

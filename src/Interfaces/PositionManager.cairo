@@ -33,6 +33,7 @@ pub trait IPositionManager<TContractState> {
     // admin
     fn set_pool(ref self: TContractState, pool_address: ContractAddress);
     fn set_adapter(ref self: TContractState, pool_address: ContractAddress);
+    fn set_config(ref self: TContractState, config: Config);
     fn get_pool(self: @TContractState) -> ContractAddress;
     fn get_adapter(self: @TContractState) -> ContractAddress;
     fn get_admin(self: @TContractState) -> ContractAddress;
@@ -43,4 +44,11 @@ pub trait IPositionManager<TContractState> {
 pub enum View {
     positions, 
     positionsByUser,
+}
+
+#[derive(Drop, Serde, Copy, starknet::Store)]
+pub struct  Config {
+    pub MIN_MARGIN_AMOUNT_TO_DEPOSIT: u256, 
+    pub MIN_MARGIN_AMOUNT_TO_OPEN_POSITION: u256, // min amount of margin that have to be used to open a position 
+    pub MAX_LOAN_TIME: u64 // a deadline for the position to be closed -> prevent pool funds freezing 
 }

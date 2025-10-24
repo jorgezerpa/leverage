@@ -9,7 +9,7 @@ mod PositionManager {
     use openzeppelin_token::erc20::interface::IERC20Dispatcher;
     use core::num::traits::Pow;
     use leverage::Maths::Math;
-    use starknet::{ContractAddress, get_caller_address, get_contract_address};
+    use starknet::{ContractAddress, get_caller_address, get_contract_address, get_block_timestamp};
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
     use starknet::storage::{Map, StoragePathEntry};
     use starknet::storage::{Vec, MutableVecTrait};
@@ -19,7 +19,7 @@ mod PositionManager {
     use openzeppelin_token::erc20::extensions::erc4626::interface::{ERC4626ABIDispatcher, ERC4626ABIDispatcherTrait};
     // 
 
-    use leverage::Interfaces::PositionManager::{IPositionManager, View};
+    use leverage::Interfaces::PositionManager::{IPositionManager, View, Config};
     use leverage::Interfaces::Shared::{Direction, MarginState, Position};
     use leverage::Interfaces::Adapters::AdapterBase::{IAdapterBaseDispatcher,IAdapterBaseDispatcherTrait};
     use leverage::Interfaces::Pool::{IPoolDispatcher, IPoolDispatcherTrait};
@@ -29,11 +29,14 @@ mod PositionManager {
     const FEE_BPS: u8 = 10; // 0.1%
     const PROTOCOL_FEE_BPS: u8 = 10; // 0.1% this will be taken from the X% of total fees 
     const BPS: u32 = 10000; // 0.1%
+    // BOUNDARIES // @TODO should be a storage variable that could be modified by an admin 
+
     
 
     #[storage]
     struct Storage {
         admin: ContractAddress, // Multisig wallet at the beggining, then maybe could be a DAO
+        config: Config,
         fee_recipient: ContractAddress, // set to 0 address to disable protocol fees 
         adapter: ContractAddress,
         pool: ContractAddress, // lending pool -> Pool contract 
@@ -60,6 +63,7 @@ mod PositionManager {
 
         // set the first position index to a empty position -> when a position is closed or liquidated, view pointers will point to this index 
         let position:Position = Position {
+            deadline: 0,
             isOpen: false,
             virtualIndexOnPositionsOpen: 0, 
             virtualIndexOnPositionsOpenByUser: 0,
@@ -203,7 +207,7 @@ mod PositionManager {
 
         ////
         fn deposit_margin(ref self: ContractState, amount: u256) {
-            // @dev@todo add min amount check 
+            assert!(amount>=self.config.MIN_MARGIN_AMOUNT_TO_DEPOSIT.read(), "Insuficient amount to deposit");
 
             let caller = get_caller_address();
             // register depositor
@@ -250,9 +254,9 @@ mod PositionManager {
             let available_margin:u256 = current_user_margin.total - current_user_margin.used; // @audit INVARIANT A should never be less than B
 
             // checks
+            assert!(margin_amount_to_use>=self.config.MIN_MARGIN_AMOUNT_TO_OPEN_POSITION.read(), "INSUFFICIENT MARGIN AMOUNT"); 
             assert!(available_margin >= margin_amount_to_use, "USER HAS NOT ENOUGH MARGIN DEPOSITED"); // the user has enough margin 
             assert!(pool.total_assets()>=total_underlying_to_use, "NOT ENOUGH LIQUIDITY ON THE POOL"); // the available liquidity on the pool is enough to cover the leverage requierement
-            // @todo assert!(leverage is a valid multiplier);
             
 
             // 2. trade with adapter @audit possible vul not follow CEI
@@ -266,6 +270,7 @@ mod PositionManager {
             // setup position  
             let index_of_new_position = self.positions.len();
             let position:Position = Position {
+                deadline: get_block_timestamp() + self.config.MAX_LOAN_TIME.read(),
                 isOpen: true,
                 virtualIndexOnPositionsOpen: self.positionsOpen.entry(POSITIONS_VECTOR_KEY).len(), // len()==currentIndex+1 (indexes from 0)
                 virtualIndexOnPositionsOpenByUser: self.positionsOpenByUser.entry(caller).len(),
@@ -435,7 +440,12 @@ mod PositionManager {
             assert!(self.admin.read() == get_caller_address(), "ONLY ADMIN");
             self.adapter.write(pool_address);
         }
-
+        
+        fn set_config(ref self: ContractState, config: Config) {
+            assert!(self.admin.read() == get_caller_address(), "ONLY ADMIN");
+            self.config.write(config);
+        }
+ 
 
     }    
 

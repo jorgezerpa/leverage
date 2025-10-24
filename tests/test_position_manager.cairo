@@ -14,7 +14,7 @@ use snforge_std::{
 };
 
 use leverage::Interfaces::Shared::{Direction, MarginState, Position};
-use leverage::Interfaces::PositionManager::{IPositionManagerDispatcher, IPositionManagerDispatcherTrait};
+use leverage::Interfaces::PositionManager::{IPositionManagerDispatcher, IPositionManagerDispatcherTrait, Config};
 use leverage::Interfaces::Pool::{IPoolDispatcher, IPoolDispatcherTrait};
 use leverage::Interfaces::Adapters::AdapterBase::{IAdapterBaseDispatcher, IAdapterBaseDispatcherTrait};
 use leverage::Mock::MockTradingAdapter::{ITestingHelperDispatcher, ITestingHelperDispatcherTrait};
@@ -74,6 +74,14 @@ fn setup() -> (IPositionManagerDispatcher, IPoolDispatcher, IAdapterBaseDispatch
     start_cheat_caller_address(positionManager.contract_address, ADMIN());
     positionManager.set_pool(pool.contract_address);
     positionManager.set_adapter(adapter.contract_address);
+    
+    // min amounts are small to simplify testing 
+    let config = Config {
+        MIN_MARGIN_AMOUNT_TO_DEPOSIT: 1,
+        MIN_MARGIN_AMOUNT_TO_OPEN_POSITION: 1, 
+        MAX_LOAN_TIME: 15778476 // 6 months in secods -> arbitrary value choiced for not particular reason
+    }; 
+    positionManager.set_config(config);
     stop_cheat_caller_address(positionManager.contract_address);
 
     // mocking balances
