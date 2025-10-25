@@ -32,23 +32,28 @@ mod PositionManager {
 
     #[storage]
     struct Storage {
-        admin: ContractAddress, // Multisig wallet at the beggining, then maybe could be a DAO
-        config: Config,
+        admin: ContractAddress, // the only one how can call the admin function
+        config: Config, // security constraints like min amount of margin to use, max loan time, etc
         fee_recipient: ContractAddress, // set to 0 address to disable protocol fees 
-        adapter: ContractAddress,
-        pool: ContractAddress, // lending pool -> Pool contract 
-        poolUsedUnderlying: u256, // the amount of underlying that is actually covering a position (AKA lended) -> this should be substracted from pool balance for calculations 
+        adapter: ContractAddress, // the specific adapter that works as a bridge to the 3rd party protocol
+        pool: ContractAddress, // ERC4626 pool  
+        poolUsedUnderlying: u256, // the total amount of underlying that is actually covering a position (AKA lended) 
         userMargin: Map<ContractAddress, MarginState>, // deposited and used margin for each user
-        positionsCount: u64,
-        positions: Vec<Position>, // length ONLY INCREASES 
-        positionsOpen: Map<felt252,Vec<u64>>, // the map has a single key -> POSITIONS_VECTOR_KEY, this is for return type matching during match sentences btw position and positions by user (one is a direct vector, the other is a pointer to the vector)
-        positionsClosed: Map<felt252,Vec<u64>>,  
+        positionsCount: u64, // count the total positions. ONLY INCREASES
+        positions: Vec<Position>, // length ONLY INCREASES. Register all created positions. No position can be deleted, this is the only positions source of truth 
+        // Views 
+        // to simplify frontend data fetching, we create some views that order the positions in useful structures
+        // each view value is a number that references to a specif view index on the positions Vec. 
+        // Also, each positions has a virtual index position, that determine what position on the views are pointing to itself. So is a double way reference. 
+        positionsOpen: Map<felt252,Vec<u64>>, // this map has a single key: POSITIONS_VECTOR_KEY, this was a fix to a typo error, because all views should be the same type for easy manipulation. 
+        positionsClosed: Map<felt252,Vec<u64>>,  // this map has a single key: POSITIONS_VECTOR_KEY, this was a fix to a typo error, because all views should be the same type for easy manipulation.
         positionsOpenByUser: Map<ContractAddress, Vec<u64>>, // User->positions 
         positionsClosedByUser: Map<ContractAddress, Vec<u64>>, // Historical purposes only -> added when liquidates or closes
-        adapterTradeData: Map<u64, Vec<felt252>> // positionId->tradeData // used to store extra data that could return a third party protocol -> it is an array of felts, to decode it into actual types, you can call adapter.get_trade_data_types 
+        //
+        adapterTradeData: Map<u64, Vec<felt252>> // positionId->tradeData // used to store extra data that could return a third party protocol and is useful for traders. It is an array of felts -> to decode it into actual types, you can call adapter.get_trade_data_types @todo create explanation docs for this 
     }
 
-     ////////////////////
+    ////////////////////
     /// CONSTRUCTOR
     ////////////////////
     #[constructor]
@@ -58,7 +63,7 @@ mod PositionManager {
     ) {
         self.admin.write(admin);
 
-        // set the first position index to a empty position -> when a position is closed or liquidated, view pointers will point to this index 
+        // set the first position index to a empty position -> when a position is closed or liquidated, view pointers will point to this index -> this is just a security extra step to not let closed position views pointers pointing to outdated view indexes (because the same index on view can be ocuppied by new positions once one is closed).
         let position:Position = Position {
             deadline: 0,
             isOpen: false,
@@ -80,7 +85,6 @@ mod PositionManager {
     #[abi(embed_v0)]
     impl PositionManagerImpl of IPositionManager<ContractState> {
         /// GETTERS
-        
         fn get_positions_count(self: @ContractState) -> u64 {
             self.positionsCount.read()
         }
@@ -486,37 +490,3 @@ mod PositionManager {
 }
 
 
-// function calculate_health(uint256 positionId) 
-//         public 
-//         view 
-//         returns (uint256 healthFactor) 
-//     {
-//         Position storage pos = positions[positionId];
-
-//         // 1. Fetch current price of the asset held in the position.
-//         // Assumes a successful price fetch. Error handling (e.g., `try/catch`) would be crucial in production.
-//         uint256 currentPrice = oracle.getAssetPrice(pos.assetAddress);
-
-//         // 2. Calculate the Current Position Value (Value of the asset held after the trade)
-//         // Value = Quantity * Price (scaled by an internal precision factor)
-//         // Note: A real implementation must handle price and quantity scaling carefully to prevent overflow/underflow.
-//         // Assuming assetQuantity and currentPrice are scaled by 1e18, we divide by 1e18 to get the scaled value.
-//         uint256 currentPositionValue = (pos.assetQuantity * currentPrice) / DENOMINATOR_PRECISION;
-
-//         // 3. Calculate the Total Debt Obligation
-//         // Total Debt = Principal Borrowed Amount + Accrued Interest + Any accrued Fees/Borrow Costs
-//         // For simplicity, we assume interestAccrued already includes any relevant fees.
-//         uint256 totalDebt = pos.borrowedAmount + pos.interestAccrued;
-
-//         // 4. Calculate the Margin Ratio (Health Factor)
-//         // Margin Ratio = (Current Position Value * DENOMINATOR_PRECISION) / Total Debt Obligation
-//         // We multiply the numerator by DENOMINATOR_PRECISION to maintain the precision of the result.
-//         // Prevents division by zero: if totalDebt is 0, the position is unleveraged and extremely healthy (return max uint).
-//         if (totalDebt == 0) {
-//             return type(uint256).max;
-//         }
-
-//         healthFactor = (currentPositionValue * DENOMINATOR_PRECISION) / totalDebt;
-
-//         return healthFactor;
-//     }
