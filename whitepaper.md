@@ -90,9 +90,7 @@ Position solvency is determined by its **Margin Ratio**, which is the current va
 1.  `liquidate()` function triggers when the ratio drops below the threshold.
 2.  **On-Chain Safeguards** re-calculate the ratio using the asset price at the moment of execution to prevent faulty liquidations.
 3.  Position is closed on the third-party protocol.
-4.  Borrowed funds are **repaid to the liquidity pool**.
-5.  A **liquidation penalty** is deducted from the trader's remaining margin and distributed to the liquidator and LPs.
-6.  Any final remaining collateral is returned to the trader.
+4.  Borrowed funds are **repaid to the liquidity pool**, and a **PROTOCOL_FEE** is taked from such funds. The rest is considered LP's profit as a compensation for risk assumption.
 
 The **Margin Ratio** (position health) is fetched by the **PositionManager** from its dedicated **Adapter**. Consequently, the logic for calculating the health factor resides within the Adapter, which allows a high level of customization for each integrated protocol. The Position Manager only fetches this value and acts in consequence. 
 
