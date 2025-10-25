@@ -1,3 +1,5 @@
+### join our [Telegram group](https://t.me/+-RxntJxVjvBlYWVh) 
+
 # Leverage Protocol: A Composable, Undercollateralized Margin Framework for Starknet 
 
 Leverage Protocol is a **decentralized** liquidity protocol on the Starknet ecosystem designed to facilitate undercollateralized lending for the purpose of margin trading. 
