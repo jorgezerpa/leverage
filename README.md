@@ -8,7 +8,7 @@ The basic architecture of the project is centered around two core components: an
 
 **These core contracts are 'plugged-in' to adapter contracts**, that act as bridges between Leverage Protocol and any other Starknet DeFi protocol and Dapp. 
 
-To get a more detailed view of the protocol, please read our [whitepaper](link)
+To get a more detailed view of the protocol, please read our [whitepaper](whitepaper.pdf)
 
 
 ---
